@@ -83,8 +83,20 @@ class TelegramView:
         return msg.strip()
 
     def create_sync_report(self, status_text, dst_text, cash, rp_amount, ticker_data, is_trade_active):
+        # 🚀 [V16.8] 타 종목들이 잠가둔 전체 격리금 총액 계산
+        total_locked = sum(t_info.get('escrow', 0.0) for t_info in ticker_data)
+        
         header_msg = f"📜 <b>[ 통합 지시서 ({status_text}) ]</b>\n📅 <b>{dst_text}</b>\n"
-        header_msg += f"💵 주문가능금액: ${cash:,.2f}\n"
+        
+        # 🚀 [V16.8] 에스크로 유무에 따른 상단 잔고 UI 동적 출력
+        if total_locked > 0:
+            real_cash = max(0, cash - total_locked)
+            header_msg += f"💵 한투 전체 잔고: ${cash:,.2f}\n"
+            header_msg += f"🔒 에스크로 격리금: -${total_locked:,.2f}\n"
+            header_msg += f"✅ 실질 가용 예산: ${real_cash:,.2f}\n"
+        else:
+            header_msg += f"💵 주문가능금액: ${cash:,.2f}\n"
+            
         header_msg += f"🏛️ RP 투자권장: ${rp_amount:,.2f}\n"
         header_msg += "----------------------------\n\n"
         
@@ -106,6 +118,12 @@ class TelegramView:
                 body_msg += f"💎 <b>[{t}] ({v_mode_display} / {t_info['t_val']}T / {int(t_info['split'])}분할)</b>\n"
             
             body_msg += f"💵 총 시드: ${t_info['seed']:,.0f} ({bdg_txt})\n"
+            
+            # 🚀 [V16.8] 해당 종목의 에스크로 가상 장부 금액 표시
+            escrow = t_info.get('escrow', 0.0)
+            if escrow > 0:
+                body_msg += f"🔐 <b>내 금고 보호액: ${escrow:,.2f}</b>\n"
+                
             body_msg += f"💰 현재 ${t_info['curr']:,.2f} / 평단 ${t_info['avg']:,.2f} <b>({t_info['qty']}주)</b>\n"
             
             sign = "+" if t_info['profit_amt'] >= 0 else "-"
@@ -259,3 +277,4 @@ class TelegramView:
             [InlineKeyboardButton("💎 SOXL + TQQQ 통합", callback_data="TICKER:ALL")]
         ]
         return f"🔄 <b>[ 운용 종목 선택 ]</b>\n현재: <b>{', '.join(current_tickers)}</b>", InlineKeyboardMarkup(keyboard)
+

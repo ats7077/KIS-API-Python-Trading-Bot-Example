@@ -13,6 +13,10 @@ class InfiniteStrategy:
         orders = []
         process_status = "" 
         
+        # 🚀 [V16.8 핵심] 타 종목이 금고에 잠가둔 격리금 확인 및 나의 진짜 예산 도출
+        other_locked_cash = self.cfg.get_total_locked_cash(exclude_ticker=ticker)
+        real_available_cash = max(0, available_cash - other_locked_cash)
+        
         seed = self.cfg.get_seed(ticker)
         split = self.cfg.get_split_count(ticker)      
         target_pct_val = self.cfg.get_target_profit(ticker) 
@@ -34,7 +38,8 @@ class InfiniteStrategy:
             
             # 🔥 [V14.1 조기 리버스모드] 우선순위에서 밀려 예수금이 부족한지 사전 감지
             # [V14.4 버그수정] 프리마켓 순찰(PRE_CHECK) 시 지갑 잔액이 넘어오지 않아 예산 부족으로 오인하는 현상 방어
-            is_money_short_check = False if (is_simulation or market_type == "PRE_CHECK") else (available_cash < one_portion_amt)
+            # 🚀 [V16.8 변경] available_cash 대신 real_available_cash를 사용하여 철저한 예산 심판
+            is_money_short_check = False if (is_simulation or market_type == "PRE_CHECK") else (real_available_cash < one_portion_amt)
             
             # 🔥 [V14.9 리버스모드 진입 판별기 및 동적 꼬리표 부착]
             if not is_reverse and (t_val > (split - 1) or (qty > 0 and is_money_short_check)):
@@ -72,6 +77,8 @@ class InfiniteStrategy:
                     if market_type == "REG":
                         # 탈출 시 상태와 꼬리표 초기화
                         self.cfg.set_reverse_state(ticker, False, 0, 0.0)
+                        # 🚀 [V16.8 추가] 탈출 시 휘발성 에스크로 금고 완벽 소각
+                        self.cfg.clear_escrow_cash(ticker)
         else:
             one_portion_amt = seed / split if split > 0 else 0
             # 🔥 [V15.7] V13(무매3)에서도 T값 산출을 KIS 절대 공식으로 오버라이드
@@ -84,28 +91,30 @@ class InfiniteStrategy:
         if is_reverse:
             star_price = round(ma_5day, 2)
             # 🔥 [V14.11 버그수정] 장부상 남은 잔금/4 를 쓰되, 실제 지갑에 남은 할당 금액(available_cash)을 절대 초과할 수 없도록 강제 방어! (마이너스 통장 방지)
-            # 🚀 [V15] 리버스 예산 분배 최적화: 운영 종목 수에 따라 잔액/4를 나눔
+            # 🚀 [V15 / V16.8 변경] 리버스 예산 분배 최적화 및 마이너스 통장 방지를 위해 real_available_cash 기준 방어!
             active_tickers_count = len(self.cfg.get_active_tickers())
             if active_tickers_count == 0: active_tickers_count = 1
             raw_portion = (rem_cash / 4.0) / active_tickers_count if rem_cash > 0 else 0.0 
-            one_portion_amt = min(raw_portion, available_cash) if not is_simulation else raw_portion
+            one_portion_amt = min(raw_portion, real_available_cash) if not is_simulation else raw_portion
         else:
             star_price = self._ceil(avg_price * (1 + star_ratio)) if avg_price > 0 else 0
             
         target_price = self._ceil(avg_price * (1 + target_ratio)) if avg_price > 0 else 0
         is_last_lap = (split - 1) < t_val < split
+        
+        # 🚀 [V16.8 변경] available_cash 대신 real_available_cash 사용
         if is_simulation: is_money_short = False
-        else: is_money_short = available_cash < one_portion_amt
+        else: is_money_short = real_available_cash < one_portion_amt
 
         base_price = current_price if current_price > 0 else prev_close
-        if base_price <= 0: return {"orders": [], "t_val": t_val, "one_portion": one_portion_amt, "process_status": "⛔가격오류", "is_reverse": is_reverse, "star_price": star_price, "star_ratio": star_ratio}
+        if base_price <= 0: return {"orders": [], "t_val": t_val, "one_portion": one_portion_amt, "process_status": "⛔가격오류", "is_reverse": is_reverse, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash}
 
         if market_type == "PRE_CHECK":
             process_status = "🌅프리마켓"
             # [V14.1 리버스모드] 리버스 중에는 프리마켓 익절 감시를 하지 않음
             if qty > 0 and target_price > 0 and current_price >= target_price and not is_reverse:
                 orders.append({"side": "SELL", "price": current_price, "qty": qty, "type": "LIMIT", "desc": "🌅프리:목표돌파익절"})
-            return {"orders": orders, "t_val": t_val, "one_portion": one_portion_amt, "process_status": process_status, "is_reverse": is_reverse, "star_price": star_price, "star_ratio": star_ratio}
+            return {"orders": orders, "t_val": t_val, "one_portion": one_portion_amt, "process_status": process_status, "is_reverse": is_reverse, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash}
 
         if market_type == "REG":
             if qty == 0:
@@ -114,7 +123,7 @@ class InfiniteStrategy:
                 buy_qty = math.floor(one_portion_amt / buy_price) if buy_price > 0 else 0
                 if buy_qty > 0:
                     orders.append({"side": "BUY", "price": buy_price, "qty": buy_qty, "type": "LOC", "desc": "🆕새출발"})
-                return {"orders": orders, "t_val": t_val, "one_portion": one_portion_amt, "process_status": process_status, "is_reverse": False, "star_price": star_price, "star_ratio": star_ratio}
+                return {"orders": orders, "t_val": t_val, "one_portion": one_portion_amt, "process_status": process_status, "is_reverse": False, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash}
 
             # --------------------------------------------------------
             # 🔥 [V14.1 리버스모드] 정규장 하이브리드 지시 로직
@@ -164,7 +173,7 @@ class InfiniteStrategy:
                 if market_type == "REG":
                     self.cfg.set_reverse_state(ticker, True, rev_day, exit_target)
                         
-                return {"orders": orders, "t_val": t_val, "one_portion": one_portion_amt, "process_status": process_status, "is_reverse": is_reverse, "star_price": star_price, "star_ratio": star_ratio}
+                return {"orders": orders, "t_val": t_val, "one_portion": one_portion_amt, "process_status": process_status, "is_reverse": is_reverse, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash}
 
             # --------------------------------------------------------
             # 기존 V13 / V14 일반 모드 지시 로직
@@ -178,7 +187,8 @@ class InfiniteStrategy:
             is_turbo_active = False if force_turbo_off else self.cfg.get_turbo_mode()
                 
             if is_turbo_active and not is_last_lap:
-                if is_simulation or available_cash >= one_portion_amt:
+                # 🚀 [V16.8 변경] available_cash 대신 real_available_cash 사용
+                if is_simulation or real_available_cash >= one_portion_amt:
                     ref_price = min(avg_price, prev_close)
                     turbo_price = round(self._ceil(ref_price * 0.95) - 0.01, 2)
                     turbo_qty = math.floor(one_portion_amt / turbo_price) if turbo_price > 0 else 0
@@ -239,6 +249,6 @@ class InfiniteStrategy:
             if target_price > 0:
                 orders.append({"side": "SELL", "price": target_price, "qty": r_qty, "type": "LIMIT", "desc": "🎯목표익절"})
 
-            return {"orders": orders, "t_val": t_val, "one_portion": one_portion_amt, "process_status": process_status, "is_reverse": False, "star_price": star_price, "star_ratio": star_ratio}
+            return {"orders": orders, "t_val": t_val, "one_portion": one_portion_amt, "process_status": process_status, "is_reverse": False, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash}
             
-        return {"orders": orders, "t_val": t_val, "one_portion": one_portion_amt, "process_status": "대기", "is_reverse": is_reverse, "star_price": star_price, "star_ratio": star_ratio}
+        return {"orders": orders, "t_val": t_val, "one_portion": one_portion_amt, "process_status": "대기", "is_reverse": is_reverse, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash}

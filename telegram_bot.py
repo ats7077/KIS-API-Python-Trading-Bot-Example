@@ -122,7 +122,8 @@ class TelegramController:
                 'target': self.cfg.get_target_profit(t), 'star_pct': round(plan.get('star_ratio', 0) * 100, 2) if 'star_ratio' in plan else 0.0,
                 'seed': seed, 'one_portion': plan.get('one_portion', 0.0), 'plan': plan,
                 'is_locked': self.cfg.check_lock(t, "REG"), 'mode': "REG",
-                'is_reverse': plan.get('is_reverse', False), 'star_price': plan.get('star_price', 0.0) 
+                'is_reverse': plan.get('is_reverse', False), 'star_price': plan.get('star_price', 0.0),
+                'escrow': self.cfg.get_escrow_cash(t) 
             })
             total_buy_needed += sum(o['price']*o['qty'] for o in plan['orders'] if o['side']=='BUY')
 
@@ -145,6 +146,27 @@ class TelegramController:
         if success_tickers: await self._display_ledger(success_tickers[0], chat_id, context, message_obj=status_msg)
         else: await status_msg.edit_text("✅ <b>동기화 완료</b> (표시할 진행 중인 장부가 없거나 에러 대기 중입니다)", parse_mode='HTML')
 
+    # 🚀 [V16.8] 에스크로 가상 장부 동적 보정 (Idempotent 방식)
+    def _sync_escrow_cash(self, ticker):
+        """리버스 모드 당사자의 매수/매도 팩트(장부)를 기반으로 에스크로 금고 잔액을 실시간 역산하여 정확하게 보정합니다."""
+        is_rev = self.cfg.get_reverse_state(ticker).get("is_active", False)
+        if not is_rev:
+            self.cfg.clear_escrow_cash(ticker)
+            return
+
+        ledger = self.cfg.get_ledger()
+        target_recs = [r for r in ledger if r.get('ticker') == ticker and r.get('is_reverse', False)]
+        
+        escrow = 0.0
+        for r in target_recs:
+            amt = r['qty'] * r['price']
+            if r['side'] == 'SELL':
+                escrow += amt
+            elif r['side'] == 'BUY':
+                escrow -= amt
+                
+        self.cfg.set_escrow_cash(ticker, max(0.0, escrow))
+
     # 🚀 [V15.8] 스마트 영업일 역산 엔진 + 스냅샷 닻(Anchor) + 액분 방어 하이브리드
     async def process_auto_sync(self, ticker, chat_id, context, silent_ledger=False):
         if self.sync_locks.get(ticker, False): return "LOCKED"
@@ -164,18 +186,10 @@ class TelegramController:
             diff = actual_qty - ledger_qty
             price_diff = abs(actual_avg - avg_price)
 
-            # 로직 1-A [스냅샷]: 장부가 비어있는데 한투 잔고가 존재할 때 (새 출발 닻 내리기)
             if actual_qty > 0 and len(recs) == 0:
                 self.cfg.overwrite_ledger(ticker, actual_qty, actual_avg)
                 await context.bot.send_message(chat_id, f"📸 <b>[{ticker} 스냅샷]</b> 장부 초기화 및 잔고 동기화 완료.", parse_mode='HTML')
-                if not silent_ledger: await self._display_ledger(ticker, chat_id, context)
-                return "SUCCESS"
-
-            # 로직 1-B [스냅샷 무한루프 방지]: 장부가 1줄일 때의 완벽한 처리
-            if actual_qty > 0 and len(recs) == 1:
-                if diff != 0 or price_diff >= 0.01:
-                    self.cfg.overwrite_ledger(ticker, actual_qty, actual_avg)
-                    await context.bot.send_message(chat_id, f"📸 <b>[{ticker} 스냅샷 교정]</b> 1줄 장부 오차 발생으로 강제 덮어쓰기 완료.", parse_mode='HTML')
+                self._sync_escrow_cash(ticker) 
                 if not silent_ledger: await self._display_ledger(ticker, chat_id, context)
                 return "SUCCESS"
 
@@ -192,13 +206,13 @@ class TelegramController:
                     if added_seed > 0:
                         msg += f"\n💸 <b>자동 복리 +${added_seed:,.0f}</b> 이 다음 운용 시드에 완벽하게 추가되었습니다!"
                     await context.bot.send_message(chat_id, msg, parse_mode='HTML')
+                self._sync_escrow_cash(ticker) 
                 if not silent_ledger: await self._display_ledger(ticker, chat_id, context)
                 return "SUCCESS"
 
             kst = pytz.timezone('Asia/Seoul')
             now_kst = datetime.datetime.now(kst)
 
-            # 💡 [V15.8 스마트 영업일 로직] 마지막 영업일을 조회 타겟으로 잡습니다.
             est = pytz.timezone('US/Eastern')
             now_est = datetime.datetime.now(est)
             nyse = mcal.get_calendar('NYSE')
@@ -216,9 +230,19 @@ class TelegramController:
             target_execs = self.broker.get_execution_history(ticker, target_kis_str, target_kis_str)
             kis_target_trades = len(target_execs)
             
+            # 🚀 [V16.6 핫픽스] KST vs EST 시차로 인한 지문 대조(1-Line Curse) 타임 패러독스 완벽 방어
+            is_only_snapshot = (len(recs) == 1 and 'INIT' in str(recs[0].get('exec_id', '')))
             ledger_target_trades = len([r for r in recs if r['date'] == target_ledger_str and 'INIT' not in str(r.get('exec_id', ''))])
             
-            micro_mismatch = (kis_target_trades != ledger_target_trades)
+            if is_only_snapshot and diff == 0 and price_diff < 0.01:
+                # 장부가 1줄 스냅샷인데 수량/평단가가 완벽히 일치하면, 시차로 인한 무의미한 지문 대조 패스
+                micro_mismatch = False
+            else:
+                has_init_today = any('INIT' in str(r.get('exec_id', '')) for r in recs if r['date'] == target_ledger_str)
+                if has_init_today:
+                    micro_mismatch = False
+                else:
+                    micro_mismatch = (kis_target_trades != ledger_target_trades)
 
             if diff != 0 or price_diff >= 0.01 or micro_mismatch:
                 temp_recs = [r for r in recs if r['date'] != target_ledger_str or 'INIT' in str(r.get('exec_id', ''))]
@@ -251,8 +275,13 @@ class TelegramController:
                             'avg_price': temp_sim_avg
                         })
                         
-                if temp_sim_qty == actual_qty and abs(temp_sim_avg - actual_avg) < 0.01:
+                if temp_sim_qty == actual_qty:
                     fast_track_success = True
+                    if new_target_records:
+                        for r in new_target_records:
+                            r['avg_price'] = actual_avg
+                    elif temp_recs:
+                        temp_recs[-1]['avg_price'] = actual_avg
                     
                 if fast_track_success:
                     self.cfg.overwrite_incremental_ledger(ticker, temp_recs, new_target_records)
@@ -271,6 +300,8 @@ class TelegramController:
                         await status_msg.edit_text(f"✅ <b>[{ticker}] KIS 팩트 기반 실시간 장부 동기화 완료!</b>", parse_mode='HTML')
                     else:
                         await status_msg.edit_text(f"⚠️ [{ticker}] 역산 중 통신 오류가 발생했습니다.", parse_mode='HTML')
+
+            self._sync_escrow_cash(ticker)
 
             if not silent_ledger: await self._display_ledger(ticker, chat_id, context)
             return "SUCCESS"

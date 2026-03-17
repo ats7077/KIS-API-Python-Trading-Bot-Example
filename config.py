@@ -69,6 +69,36 @@ class ConfigManager:
     def get_ledger(self):
         return self._load_json(self.FILES["LEDGER"], [])
 
+    # 🚀 [V16.8] 휘발성 가상 장부(Escrow) 로직 - 타 종목 예산 탈취 원천 차단
+    def get_escrow_cash(self, ticker):
+        locks = self._load_json(self.FILES["LOCKS"], {})
+        return float(locks.get(f"ESCROW_{ticker}", 0.0))
+
+    def set_escrow_cash(self, ticker, amount):
+        locks = self._load_json(self.FILES["LOCKS"], {})
+        locks[f"ESCROW_{ticker}"] = float(amount)
+        self._save_json(self.FILES["LOCKS"], locks)
+
+    def add_escrow_cash(self, ticker, amount):
+        current = self.get_escrow_cash(ticker)
+        self.set_escrow_cash(ticker, current + float(amount))
+
+    def clear_escrow_cash(self, ticker):
+        locks = self._load_json(self.FILES["LOCKS"], {})
+        if f"ESCROW_{ticker}" in locks:
+            del locks[f"ESCROW_{ticker}"]
+            self._save_json(self.FILES["LOCKS"], locks)
+
+    def get_total_locked_cash(self, exclude_ticker=None):
+        locks = self._load_json(self.FILES["LOCKS"], {})
+        total = 0.0
+        for k, v in locks.items():
+            if k.startswith("ESCROW_"):
+                ticker_in_lock = k.replace("ESCROW_", "")
+                if ticker_in_lock != exclude_ticker:
+                    total += float(v)
+        return total
+
     # 🚀 [V15.1] T값 산출 절대 공식: (총 매수액 / 1회분)
     def calculate_v15_t_val(self, ticker):
         recs = [r for r in self.get_ledger() if r['ticker'] == ticker]
@@ -142,14 +172,14 @@ class ConfigManager:
         })
         self._save_json(self.FILES["LEDGER"], remaining)
 
-    # 🔥 [V16.0] 사용되지 않는 구형 V13/V14 동기화 함수들(sync_from_balance, append_ledger_record, get_realized_pnl) 전면 삭제 완료
-
     def clear_ledger_for_ticker(self, ticker):
         ledger = self.get_ledger()
         remaining = [r for r in ledger if r['ticker'] != ticker]
         self._save_json(self.FILES["LEDGER"], remaining)
         # [V14.1 리버스모드] 졸업 시 리버스모드 상태도 초기화
         self.set_reverse_state(ticker, False, 0, 0.0)
+        # 🚀 [V16.8] 졸업 시 휘발성 가상 장부 에스크로 잔금도 함께 소각
+        self.clear_escrow_cash(ticker)
 
     def calculate_holdings(self, ticker, records=None):
         if records is None:
@@ -171,10 +201,7 @@ class ConfigManager:
         
         avg_price = 0.0
         if total_qty > 0 and target_recs:
-            # 💡 [V15.4 버그 수정] 단순 계산이 아닌 장부 최신 기록에 보존된 KIS의 절대 평단가를 그대로 가져옴!
             avg_price = float(target_recs[-1].get('avg_price', 0.0))
-            
-            # (과거 버전 호환성을 위해 avg_price가 없을 경우에만 기존 방식으로 비상 계산)
             if avg_price == 0.0:
                 buy_sum = sum(r['price']*r['qty'] for r in target_recs if r['side']=='BUY')
                 buy_qty = sum(r['qty'] for r in target_recs if r['side']=='BUY')
@@ -183,10 +210,8 @@ class ConfigManager:
         
         return total_qty, avg_price, invested_up, sold_up
 
-    # [V14.1 리버스모드] 리버스 상태 조회 및 설정
     def get_reverse_state(self, ticker):
         d = self._load_json(self.FILES["REVERSE_CFG"], {})
-        # [V14.9] 탈출 목표(exit_target) 값 추가 기본값 0.0
         return d.get(ticker, {"is_active": False, "day_count": 0, "exit_target": 0.0})
 
     def set_reverse_state(self, ticker, is_active, day_count, exit_target=0.0):
@@ -194,7 +219,6 @@ class ConfigManager:
         d[ticker] = {"is_active": is_active, "day_count": day_count, "exit_target": exit_target}
         self._save_json(self.FILES["REVERSE_CFG"], d)
 
-    # [V14] 무매 버전4의 핵심: 실시간 동적 1회분 계산 로직
     def calculate_v14_state(self, ticker):
         ledger = self.get_ledger()
         target_recs = sorted([r for r in ledger if r['ticker'] == ticker], key=lambda x: x.get('id', 0))
@@ -243,8 +267,6 @@ class ConfigManager:
                         t_val *= multiplier
                     else:
                         t_val *= 0.75
-                    # 🔥 [V15.5] 대표님 지시 반영: 매도 금액을 남은 시드(예산)에 복원하여 T값과 1회분이 
-                    # 고정되지 않고 완벽한 비율로 동적 계산되도록 하는 무매 V4의 신의 한 수!
                     rem_cash += amt
                     
         if holdings > 0:
@@ -255,7 +277,6 @@ class ConfigManager:
             
         return max(0.0, round(t_val, 4)), max(0.0, current_budget), max(0.0, rem_cash)
 
-    # 🚀 [V16.0] 부활! 졸업 시 명예의 전당 저장 및 복리 계산 로직
     def archive_graduation(self, ticker, end_date, prev_close=0.0):
         ledger = self.get_ledger()
         target_recs = [r for r in ledger if r['ticker'] == ticker]
@@ -323,16 +344,14 @@ class ConfigManager:
         
         return new_hist, added_seed
 
-    # [V14.5] 파이썬 모듈에서 리스트를 그대로 읽어옵니다.
     def get_version_history(self):
         return VERSION_HISTORY
 
-    # 🚀 [V15.5] 1줄 버전 문자열 파싱 호환성 추가
     def get_latest_version(self):
         history = self.get_version_history()
         if history and len(history) > 0:
             if isinstance(history[0], str):
-                return history[0].split(' ')[0] # "V15.5" 부분만 추출
+                return history[0].split(' ')[0] 
             return history[0].get("version", "V14.x")
         return "V14.x"
 
