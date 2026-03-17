@@ -9,14 +9,12 @@ import time
 try:
     from version_history import VERSION_HISTORY
 except ImportError:
-    # version_history.py 파일이 누락되었을 경우를 대비한 안전 장치
     VERSION_HISTORY = [
         "V14.x [-] 버전 기록 파일(version_history.py)을 찾을 수 없습니다."
     ]
 
 class ConfigManager:
     def __init__(self):
-        # [V14.2] 모든 데이터/설정 파일이 data/ 디렉토리 내부에서 생성되고 관리되도록 경로 수정
         self.FILES = {
             "TOKEN": "data/token.dat",
             "CHAT_ID": "data/chat_id.dat",
@@ -30,7 +28,7 @@ class ConfigManager:
             "SEED_CFG": "data/seed_config.json",         
             "COMPOUND_CFG": "data/compound_config.json",
             "VERSION_CFG": "data/version_config.json",
-            "REVERSE_CFG": "data/reverse_config.json" # [V14.1 리버스모드] 상태 보관용 파일 추가
+            "REVERSE_CFG": "data/reverse_config.json"
         }
         
         self.DEFAULT_SEED = {"SOXL": 6720.0, "TQQQ": 6720.0}
@@ -68,7 +66,6 @@ class ConfigManager:
     def get_ledger(self):
         return self._load_json(self.FILES["LEDGER"], [])
 
-    # 🚀 [V16.8] 휘발성 가상 장부(Escrow) 로직 - 타 종목 예산 탈취 원천 차단
     def get_escrow_cash(self, ticker):
         locks = self._load_json(self.FILES["LOCKS"], {})
         return float(locks.get(f"ESCROW_{ticker}", 0.0))
@@ -98,7 +95,6 @@ class ConfigManager:
                     total += float(v)
         return total
 
-    # 🚀 [V16.11 신규 최적화] 중앙 통합 T값(절대 진행률) 및 1회분 예산 산출 헬퍼 함수
     def get_absolute_t_val(self, ticker, actual_qty, actual_avg_price):
         seed = self.get_seed(ticker)
         split = self.get_split_count(ticker)
@@ -106,7 +102,6 @@ class ConfigManager:
         t_val = (actual_qty * actual_avg_price) / one_portion if one_portion > 0 else 0.0
         return round(t_val, 4), one_portion
 
-    # 🚀 [V15.3] 제네시스 장부 캐싱
     def overwrite_genesis_ledger(self, ticker, genesis_records, actual_avg):
         ledger = self.get_ledger()
         remaining = [r for r in ledger if r['ticker'] != ticker]
@@ -125,7 +120,6 @@ class ConfigManager:
             })
         self._save_json(self.FILES["LEDGER"], remaining)
 
-    # 🚀 [V15.5] 증분 업데이트 (1일 치만 교체하여 덮어쓰기)
     def overwrite_incremental_ledger(self, ticker, temp_recs, new_today_records):
         ledger = self.get_ledger()
         remaining = [r for r in ledger if r['ticker'] != ticker]
@@ -151,7 +145,6 @@ class ConfigManager:
         remaining.extend(updated_ticker_recs)
         self._save_json(self.FILES["LEDGER"], remaining)
 
-    # [V15] 로직 1-A / 1-B: 장부를 현재 잔고로 강제 덮어쓰기
     def overwrite_ledger(self, ticker, actual_qty, actual_avg):
         ledger = self.get_ledger()
         remaining = [r for r in ledger if r['ticker'] != ticker]
@@ -171,9 +164,7 @@ class ConfigManager:
         ledger = self.get_ledger()
         remaining = [r for r in ledger if r['ticker'] != ticker]
         self._save_json(self.FILES["LEDGER"], remaining)
-        # [V14.1 리버스모드] 졸업 시 리버스모드 상태도 초기화
         self.set_reverse_state(ticker, False, 0, 0.0)
-        # 🚀 [V16.8] 졸업 시 휘발성 가상 장부 에스크로 잔금도 함께 소각
         self.clear_escrow_cash(ticker)
 
     def calculate_holdings(self, ticker, records=None):
@@ -214,7 +205,6 @@ class ConfigManager:
         d[ticker] = {"is_active": is_active, "day_count": day_count, "exit_target": exit_target}
         self._save_json(self.FILES["REVERSE_CFG"], d)
 
-    # 🚀 [V16.11 최적화] 불필요한 과거 T값 추적 로직을 제거하고 잔금(rem_cash) 및 동적 예산만 깔끔하게 도출
     def calculate_v14_state(self, ticker):
         ledger = self.get_ledger()
         target_recs = sorted([r for r in ledger if r['ticker'] == ticker], key=lambda x: x.get('id', 0))
@@ -252,7 +242,6 @@ class ConfigManager:
                     holdings -= qty
                     rem_cash += amt
                     
-        # 최신 KIS 팩트 기반 절대 T값 오버라이드 계산
         avg_price = total_invested / holdings if holdings > 0 else 0.0
         t_val = (holdings * avg_price) / base_portion if base_portion > 0 else 0.0
             
@@ -334,12 +323,15 @@ class ConfigManager:
     def get_version_history(self):
         return VERSION_HISTORY
 
+    # 🚀 [V16.15] 최신 버전 인식 로직 개선: 오름차순 정렬에 대응하여 리스트의 마지막 항목(-1)을 참조
     def get_latest_version(self):
         history = self.get_version_history()
         if history and len(history) > 0:
-            if isinstance(history[0], str):
-                return history[0].split(' ')[0] 
-            return history[0].get("version", "V14.x")
+            # 리스트 정렬 방식 변경에 따라 가장 마지막 항목을 최신으로 간주
+            latest_entry = history[-1]
+            if isinstance(latest_entry, str):
+                return latest_entry.split(' ')[0] 
+            return latest_entry.get("version", "V14.x")
         return "V14.x"
 
     def get_history(self):
