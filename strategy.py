@@ -1,7 +1,3 @@
-# ==========================================================
-# [strategy.py]
-# ⚠️ 이 주석 및 파일명 표기는 절대 지우지 마세요.
-# ==========================================================
 import math
 from datetime import datetime, timedelta
 
@@ -15,6 +11,8 @@ class InfiniteStrategy:
     def get_plan(self, ticker, current_price, avg_price, qty, prev_close, ma_5day=0.0, market_type="REG", available_cash=0, is_simulation=False, force_turbo_off=False):
         core_orders = []
         bonus_orders = []
+        smart_core_orders = []   # ★ [V17] 스나이퍼 성공 시 발동할 스마트 관망 매수(필수)
+        smart_bonus_orders = []  # ★ [V17] 스나이퍼 성공 시 발동할 스마트 관망 줍줍(보너스)
         process_status = "" 
         
         other_locked_cash = self.cfg.get_total_locked_cash(exclude_ticker=ticker)
@@ -75,14 +73,14 @@ class InfiniteStrategy:
 
         base_price = current_price if current_price > 0 else prev_close
         if base_price <= 0: 
-            return {"orders": [], "core_orders": [], "bonus_orders": [], "t_val": t_val, "one_portion": one_portion_amt, "process_status": "⛔가격오류", "is_reverse": is_reverse, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash}
+            return {"orders": [], "core_orders": [], "bonus_orders": [], "smart_core_orders": [], "smart_bonus_orders": [], "t_val": t_val, "one_portion": one_portion_amt, "process_status": "⛔가격오류", "is_reverse": is_reverse, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash}
 
         if market_type == "PRE_CHECK":
             process_status = "🌅프리마켓"
             if qty > 0 and target_price > 0 and current_price >= target_price and not is_reverse:
                 core_orders.append({"side": "SELL", "price": current_price, "qty": qty, "type": "LIMIT", "desc": "🌅프리:목표돌파익절"})
             orders = core_orders + bonus_orders
-            return {"orders": orders, "core_orders": core_orders, "bonus_orders": bonus_orders, "t_val": t_val, "one_portion": one_portion_amt, "process_status": process_status, "is_reverse": is_reverse, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash}
+            return {"orders": orders, "core_orders": core_orders, "bonus_orders": bonus_orders, "smart_core_orders": [], "smart_bonus_orders": [], "t_val": t_val, "one_portion": one_portion_amt, "process_status": process_status, "is_reverse": is_reverse, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash}
 
         if market_type == "REG":
             if qty == 0:
@@ -92,7 +90,7 @@ class InfiniteStrategy:
                 if buy_qty > 0:
                     core_orders.append({"side": "BUY", "price": buy_price, "qty": buy_qty, "type": "LOC", "desc": "🆕새출발"})
                 orders = core_orders + bonus_orders
-                return {"orders": orders, "core_orders": core_orders, "bonus_orders": bonus_orders, "t_val": t_val, "one_portion": one_portion_amt, "process_status": process_status, "is_reverse": False, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash}
+                return {"orders": orders, "core_orders": core_orders, "bonus_orders": bonus_orders, "smart_core_orders": [], "smart_bonus_orders": [], "t_val": t_val, "one_portion": one_portion_amt, "process_status": process_status, "is_reverse": False, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash}
 
             if is_reverse:
                 sell_divisor = 10 if split <= 20 else 20
@@ -132,7 +130,7 @@ class InfiniteStrategy:
                     self.cfg.set_reverse_state(ticker, True, rev_day, exit_target)
                         
                 orders = core_orders + bonus_orders
-                return {"orders": orders, "core_orders": core_orders, "bonus_orders": bonus_orders, "t_val": t_val, "one_portion": one_portion_amt, "process_status": process_status, "is_reverse": is_reverse, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash}
+                return {"orders": orders, "core_orders": core_orders, "bonus_orders": bonus_orders, "smart_core_orders": [], "smart_bonus_orders": [], "t_val": t_val, "one_portion": one_portion_amt, "process_status": process_status, "is_reverse": is_reverse, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash}
 
             if is_last_lap: process_status = "🏁마지막회차"
             elif is_money_short: process_status = "🛡️방어모드(부족)"
@@ -156,6 +154,9 @@ class InfiniteStrategy:
             standard_buy_qty = 0 
             N = math.floor(one_portion_amt / avg_price) if avg_price > 0 else 0
             
+            # ==========================================================
+            # [플랜 A] 일반 매수 (V14 및 스나이퍼 대기 상태)
+            # ==========================================================
             if can_buy:
                 p_avg = round(min(self._ceil(avg_price) - 0.01, safe_ceiling - 0.01), 2)
                 p_star = round(star_price - 0.01, 2)
@@ -192,6 +193,36 @@ class InfiniteStrategy:
                     if jup_price > 0:
                         bonus_orders.append({"side": "BUY", "price": jup_price, "qty": 1, "type": "LOC", "desc": f"🧹줍줍({i})" })
 
+            # ==========================================================
+            # ★ [플랜 B] V17 전용: 스나이퍼 성공 시 작동할 '스마트 관망 매수' 장전
+            # ==========================================================
+            if version == "V17" and can_buy:
+                smart_base_qty = 0
+                if t_val < (split / 2):
+                    q_avg_smart = math.floor(one_portion_amt / p_avg) if p_avg > 0 else 0
+                    if q_avg_smart > 0:
+                        smart_core_orders.append({"side": "BUY", "price": p_avg, "qty": q_avg_smart, "type": "LOC", "desc": "🦇관망평단매수"})
+                        smart_base_qty = q_avg_smart
+                else:
+                    q_star_smart = math.floor(one_portion_amt / p_star) if p_star > 0 else 0
+                    if q_star_smart > 0:
+                        smart_core_orders.append({"side": "BUY", "price": p_star, "qty": q_star_smart, "type": "LOC", "desc": "🦇유지별값매수"})
+                        smart_base_qty = q_star_smart
+
+                if one_portion_amt > 0 and (is_simulation or not is_money_short):
+                    base_qty_for_smart_jupjup = smart_base_qty if smart_base_qty > 0 else N
+                    if base_qty_for_smart_jupjup == 0: base_qty_for_smart_jupjup = 1
+                    for i in range(1, 6):
+                        target_qty = base_qty_for_smart_jupjup + i 
+                        raw_jup_price = self._floor(one_portion_amt / target_qty)
+                        capped_jup_price = min(raw_jup_price, safe_ceiling - 0.01)
+                        jup_price = round(capped_jup_price, 2)
+                        if jup_price > 0:
+                            smart_bonus_orders.append({"side": "BUY", "price": jup_price, "qty": 1, "type": "LOC", "desc": f"🦇관망줍줍({i})" })
+
+            # ==========================================================
+            # 방어 및 익절 (매도)
+            # ==========================================================
             q_qty = math.ceil(qty / 4)
             r_qty = qty - q_qty 
 
@@ -211,6 +242,11 @@ class InfiniteStrategy:
                 core_orders.append({"side": "SELL", "price": target_price, "qty": r_qty, "type": "LIMIT", "desc": "🎯목표익절"})
 
             orders = core_orders + bonus_orders
-            return {"orders": orders, "core_orders": core_orders, "bonus_orders": bonus_orders, "t_val": t_val, "one_portion": one_portion_amt, "process_status": process_status, "is_reverse": False, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash}
+            return {
+                "orders": orders, "core_orders": core_orders, "bonus_orders": bonus_orders, 
+                "smart_core_orders": smart_core_orders, "smart_bonus_orders": smart_bonus_orders, 
+                "t_val": t_val, "one_portion": one_portion_amt, "process_status": process_status, 
+                "is_reverse": False, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash
+            }
             
-        return {"orders": [], "core_orders": [], "bonus_orders": [], "t_val": t_val, "one_portion": one_portion_amt, "process_status": "대기", "is_reverse": is_reverse, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash}
+        return {"orders": [], "core_orders": [], "bonus_orders": [], "smart_core_orders": [], "smart_bonus_orders": [], "t_val": t_val, "one_portion": one_portion_amt, "process_status": "대기", "is_reverse": is_reverse, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash}
