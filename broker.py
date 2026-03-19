@@ -10,7 +10,6 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from dotenv import load_dotenv
 
 from config import ConfigManager
-from broker import KoreaInvestmentBroker
 from strategy import InfiniteStrategy
 from telegram_bot import TelegramController
 
