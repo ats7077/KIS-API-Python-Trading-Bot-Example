@@ -157,12 +157,15 @@ class TelegramController:
             safe_prev_close = prev_close if prev_close else 0.0
             safe_bb_lower = bb_lower if bb_lower else 0.0
             
-            # 0.91을 곱해서 -9% 바닥 타점을 구함
-            hybrid_base = min(actual_avg, safe_prev_close) * 0.91 if actual_avg > 0 and safe_prev_close > 0 else safe_prev_close * 0.91
+            # 🦇 [V19.8 패치] 종목별 설정된 스나이퍼 타점 불러와서 하이브리드 베이스 계산 (지시서 반영)
+            sniper_pct = self.cfg.get_sniper_trigger(t)
+            hybrid_multiplier = (100.0 - sniper_pct) / 100.0
             
-            # 블밴 하한가와 -9% 타점 중 더 높은 가격을 스나이퍼 예상 덫으로 설정
+            hybrid_base = min(actual_avg, safe_prev_close) * hybrid_multiplier if actual_avg > 0 and safe_prev_close > 0 else safe_prev_close * hybrid_multiplier
+            
+            # 블밴 하한가와 동적 타점 중 더 높은 가격을 스나이퍼 예상 덫으로 설정
             hybrid_target = max(safe_bb_lower, hybrid_base)
-            trigger_reason = "BB" if safe_bb_lower >= hybrid_base else "-9%"
+            trigger_reason = "BB" if safe_bb_lower >= hybrid_base else f"-{sniper_pct}%"
             
             # 🛡️ [V19.5 패치] 이미 주문이 전송되어 예수금이 묶인 상태(Lock)라면 시뮬레이션 모드 가동
             is_already_ordered = self.cfg.check_lock(t, "REG") or self.cfg.check_lock(t, "SNIPER")
@@ -189,7 +192,8 @@ class TelegramController:
                 'bb_lower': safe_bb_lower,
                 'hybrid_base': hybrid_base,
                 'hybrid_target': hybrid_target,
-                'trigger_reason': trigger_reason
+                'trigger_reason': trigger_reason,
+                'sniper_trigger': sniper_pct
             })
             total_buy_needed += sum(o['price']*o['qty'] for o in plan['orders'] if o['side']=='BUY')
 
