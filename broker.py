@@ -159,6 +159,36 @@ class KoreaInvestmentBroker:
         except Exception as e:
             print(f"❌ [한투 API] 현재가 우회 조회 실패: {e}")
         return 0.0
+        
+    def get_ask_price(self, ticker):
+        try:
+            excg_cd = "AMS" if ticker == "SOXL" else "NAS"
+            params = {"AUTH": "", "EXCD": excg_cd, "SYMB": ticker}
+            res = self._call_api("HHDFS76200100", "/uapi/overseas-price/v1/quotations/inquire-asking-price", "GET", params=params)
+            if res.get('rt_cd') == '0':
+                output2 = res.get('output2', [])
+                if isinstance(output2, list) and len(output2) > 0:
+                    return float(output2[0].get('pask1', 0.0))
+                elif isinstance(output2, dict):
+                    return float(output2.get('pask1', 0.0))
+        except Exception as e:
+            print(f"❌ [한투 API] 매도 1호가 조회 실패: {e}")
+        return 0.0
+
+    def get_bid_price(self, ticker):
+        try:
+            excg_cd = "AMS" if ticker == "SOXL" else "NAS"
+            params = {"AUTH": "", "EXCD": excg_cd, "SYMB": ticker}
+            res = self._call_api("HHDFS76200100", "/uapi/overseas-price/v1/quotations/inquire-asking-price", "GET", params=params)
+            if res.get('rt_cd') == '0':
+                output2 = res.get('output2', [])
+                if isinstance(output2, list) and len(output2) > 0:
+                    return float(output2[0].get('pbid1', 0.0))
+                elif isinstance(output2, dict):
+                    return float(output2.get('pbid1', 0.0))
+        except Exception as e:
+            print(f"❌ [한투 API] 매수 1호가 조회 실패: {e}")
+        return 0.0
 
     def get_previous_close(self, ticker):
         try: return float(yf.Ticker(ticker).fast_info['previous_close'])
