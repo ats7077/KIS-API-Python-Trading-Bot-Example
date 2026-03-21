@@ -42,7 +42,7 @@ class KoreaInvestmentBroker:
         body = {"grant_type": "client_credentials", "appkey": self.app_key, "appsecret": self.app_secret}
         
         try:
-            res = requests.post(url, headers={"content-type": "application/json"}, data=json.dumps(body))
+            res = requests.post(url, headers={"content-type": "application/json"}, data=json.dumps(body), timeout=10)
             data = res.json()
             if 'access_token' in data:
                 self.token = data['access_token']
@@ -69,9 +69,9 @@ class KoreaInvestmentBroker:
         for attempt in range(2): 
             try:
                 if method.upper() == "GET":
-                    res = requests.get(url, headers=headers, params=params)
+                    res = requests.get(url, headers=headers, params=params, timeout=10)
                 else:
-                    res = requests.post(url, headers=headers, data=json.dumps(data) if data else None)
+                    res = requests.post(url, headers=headers, data=json.dumps(data) if data else None, timeout=10)
                     
                 resp_json = res.json()
                 
@@ -421,7 +421,8 @@ class KoreaInvestmentBroker:
         if curr_qty == 0: return [], 0, 0.0
             
         ledger_records = []
-        target_date = datetime.datetime.now()
+        est = pytz.timezone('US/Eastern')
+        target_date = datetime.datetime.now(est)
         genesis_reached = False
         
         while curr_qty > 0 and not genesis_reached:
@@ -463,7 +464,7 @@ class KoreaInvestmentBroker:
                         
             target_date -= datetime.timedelta(days=1)
             time.sleep(0.1) 
-            if (datetime.datetime.now() - target_date).days > 365: break 
+            if (datetime.datetime.now(est) - target_date).days > 365: break 
                 
         ledger_records.reverse()
         return ledger_records, final_qty, final_avg

@@ -22,10 +22,13 @@ class TelegramController:
 
     def _is_admin(self, update: Update):
         if self.admin_id is None:
-            self.admin_id = update.effective_chat.id
-            self.cfg.set_chat_id(self.admin_id)
-            return True
-        return update.effective_chat.id == self.admin_id
+            self.admin_id = self.cfg.get_chat_id()
+        
+        if self.admin_id is None:
+            print("⚠️ 보안 경고: ADMIN_CHAT_ID가 설정되지 않아 알 수 없는 사용자의 접근을 차단했습니다.")
+            return False
+            
+        return update.effective_chat.id == int(self.admin_id)
 
     def _get_dst_info(self):
         est = pytz.timezone('US/Eastern')
@@ -117,85 +120,80 @@ class TelegramController:
         if not self._is_admin(update): return
         await update.message.reply_text("🔄 시장 분석 및 지시서 작성 중...")
         
-        cash, holdings = self.broker.get_account_balance()
-        if holdings is None:
-            await update.message.reply_text("❌ KIS API 통신 오류로 계좌 정보를 불러올 수 없습니다. 잠시 후 다시 시도해주세요.")
-            return
+        async with self.tx_lock:
+            cash, holdings = self.broker.get_account_balance()
+            if holdings is None:
+                await update.message.reply_text("❌ KIS API 통신 오류로 계좌 정보를 불러올 수 없습니다. 잠시 후 다시 시도해주세요.")
+                return
 
-        target_hour, _ = self._get_dst_info() 
-        dst_txt = "🌞 서머타임 (17:30)" if target_hour == 17 else "❄️ 겨울 (18:30)"
-        status_code, status_text = self._get_market_status()
-        
-        tickers = self.cfg.get_active_tickers()
-        
-        sorted_tickers, allocated_cash, force_turbo_off = self._calculate_budget_allocation(cash, tickers)
-        
-        ticker_data_list = []
-        total_buy_needed = 0.0
+            target_hour, _ = self._get_dst_info() 
+            dst_txt = "🌞 서머타임 (17:30)" if target_hour == 17 else "❄️ 겨울 (18:30)"
+            status_code, status_text = self._get_market_status()
+            
+            tickers = self.cfg.get_active_tickers()
+            
+            sorted_tickers, allocated_cash, force_turbo_off = self._calculate_budget_allocation(cash, tickers)
+            
+            ticker_data_list = []
+            total_buy_needed = 0.0
 
-        for t in sorted_tickers:
-            h = holdings.get(t, {'qty':0, 'avg':0})
-            
-            curr = await asyncio.to_thread(self.broker.get_current_price, t, is_market_closed=(status_code == "CLOSE"))
-            prev_close = await asyncio.to_thread(self.broker.get_previous_close, t)
-            ma_5day = await asyncio.to_thread(self.broker.get_5day_ma, t)
-            
-            # 🦇 [V19.1 패치] 에러 방지용 안전장치(Try-Except 및 None 방어) 탑재
-            bb_lower = self.cfg.get_daily_bb_lower(t)
-            if (bb_lower is None or bb_lower == 0.0) and self.cfg.get_version(t) == "V17":
-                try:
-                    # V19 엔진의 current_price 인자 전달 시도
-                    bb_lower = await asyncio.to_thread(self.broker.get_bb_lower, t, current_price=curr)
-                except Exception as e:
-                    # 혹시 호환 안 되면 기본 함수로 호출
-                    bb_lower = await asyncio.to_thread(self.broker.get_bb_lower, t)
+            for t in sorted_tickers:
+                h = holdings.get(t, {'qty':0, 'avg':0})
                 
-                bb_lower = bb_lower if bb_lower is not None else 0.0 # None 절대 금지
-                self.cfg.set_daily_bb_lower(t, bb_lower)
+                curr = await asyncio.to_thread(self.broker.get_current_price, t, is_market_closed=(status_code == "CLOSE"))
+                prev_close = await asyncio.to_thread(self.broker.get_previous_close, t)
+                ma_5day = await asyncio.to_thread(self.broker.get_5day_ma, t)
                 
-            actual_avg = float(h['avg']) if h['avg'] else 0.0
-            safe_prev_close = prev_close if prev_close else 0.0
-            safe_bb_lower = bb_lower if bb_lower else 0.0
-            
-            # 🦇 [V19.8 패치] 종목별 설정된 스나이퍼 타점 불러와서 하이브리드 베이스 계산 (지시서 반영)
-            sniper_pct = self.cfg.get_sniper_trigger(t)
-            hybrid_multiplier = (100.0 - sniper_pct) / 100.0
-            
-            hybrid_base = min(actual_avg, safe_prev_close) * hybrid_multiplier if actual_avg > 0 and safe_prev_close > 0 else safe_prev_close * hybrid_multiplier
-            
-            # 블밴 하한가와 동적 타점 중 더 높은 가격을 스나이퍼 예상 덫으로 설정
-            hybrid_target = max(safe_bb_lower, hybrid_base)
-            trigger_reason = "BB" if safe_bb_lower >= hybrid_base else f"-{sniper_pct}%"
-            
-            # 🛡️ [V19.5 패치] 이미 주문이 전송되어 예수금이 묶인 상태(Lock)라면 시뮬레이션 모드 가동
-            is_already_ordered = self.cfg.check_lock(t, "REG") or self.cfg.check_lock(t, "SNIPER")
-            
-            plan = self.strategy.get_plan(
-                t, curr, actual_avg, int(h['qty']), safe_prev_close, ma_5day=ma_5day,
-                market_type="REG", available_cash=allocated_cash[t], force_turbo_off=force_turbo_off,
-                is_simulation=is_already_ordered 
-            )
-            split = self.cfg.get_split_count(t)
-            seed = self.cfg.get_seed(t)
-            ver = self.cfg.get_version(t)
-            
-            ticker_data_list.append({
-                'ticker': t, 'version': ver, 't_val': plan.get('t_val', 0.0), 'split': split, 'curr': curr, 'avg': actual_avg, 'qty': int(h['qty']),
-                'profit_amt': (curr - actual_avg) * int(h['qty']) if int(h['qty']) > 0 else 0, 
-                'profit_pct': (curr - actual_avg) / actual_avg * 100 if actual_avg > 0 else 0,
-                'turbo_txt': "ON" if self.cfg.get_turbo_mode() else "OFF",
-                'target': self.cfg.get_target_profit(t), 'star_pct': round(plan.get('star_ratio', 0) * 100, 2) if 'star_ratio' in plan else 0.0,
-                'seed': seed, 'one_portion': plan.get('one_portion', 0.0), 'plan': plan,
-                'is_locked': is_already_ordered, 'mode': "REG",
-                'is_reverse': plan.get('is_reverse', False), 'star_price': plan.get('star_price', 0.0),
-                'escrow': self.cfg.get_escrow_cash(t),
-                'bb_lower': safe_bb_lower,
-                'hybrid_base': hybrid_base,
-                'hybrid_target': hybrid_target,
-                'trigger_reason': trigger_reason,
-                'sniper_trigger': sniper_pct
-            })
-            total_buy_needed += sum(o['price']*o['qty'] for o in plan['orders'] if o['side']=='BUY')
+                bb_lower = self.cfg.get_daily_bb_lower(t)
+                if (bb_lower is None or bb_lower == 0.0) and self.cfg.get_version(t) == "V17":
+                    try:
+                        bb_lower = await asyncio.to_thread(self.broker.get_bb_lower, t, current_price=curr)
+                    except Exception as e:
+                        bb_lower = await asyncio.to_thread(self.broker.get_bb_lower, t)
+                    
+                    bb_lower = bb_lower if bb_lower is not None else 0.0
+                    self.cfg.set_daily_bb_lower(t, bb_lower)
+                    
+                actual_avg = float(h['avg']) if h['avg'] else 0.0
+                safe_prev_close = prev_close if prev_close else 0.0
+                safe_bb_lower = bb_lower if bb_lower else 0.0
+                
+                sniper_pct = self.cfg.get_sniper_trigger(t)
+                hybrid_multiplier = (100.0 - sniper_pct) / 100.0
+                
+                hybrid_base = min(actual_avg, safe_prev_close) * hybrid_multiplier if actual_avg > 0 and safe_prev_close > 0 else safe_prev_close * hybrid_multiplier
+                
+                hybrid_target = max(safe_bb_lower, hybrid_base)
+                trigger_reason = "BB" if safe_bb_lower >= hybrid_base else f"-{sniper_pct}%"
+                
+                is_already_ordered = self.cfg.check_lock(t, "REG") or self.cfg.check_lock(t, "SNIPER")
+                
+                plan = self.strategy.get_plan(
+                    t, curr, actual_avg, int(h['qty']), safe_prev_close, ma_5day=ma_5day,
+                    market_type="REG", available_cash=allocated_cash[t], force_turbo_off=force_turbo_off,
+                    is_simulation=is_already_ordered 
+                )
+                split = self.cfg.get_split_count(t)
+                seed = self.cfg.get_seed(t)
+                ver = self.cfg.get_version(t)
+                
+                ticker_data_list.append({
+                    'ticker': t, 'version': ver, 't_val': plan.get('t_val', 0.0), 'split': split, 'curr': curr, 'avg': actual_avg, 'qty': int(h['qty']),
+                    'profit_amt': (curr - actual_avg) * int(h['qty']) if int(h['qty']) > 0 else 0, 
+                    'profit_pct': (curr - actual_avg) / actual_avg * 100 if actual_avg > 0 else 0,
+                    'turbo_txt': "ON" if self.cfg.get_turbo_mode() else "OFF",
+                    'target': self.cfg.get_target_profit(t), 'star_pct': round(plan.get('star_ratio', 0) * 100, 2) if 'star_ratio' in plan else 0.0,
+                    'seed': seed, 'one_portion': plan.get('one_portion', 0.0), 'plan': plan,
+                    'is_locked': is_already_ordered, 'mode': "REG",
+                    'is_reverse': plan.get('is_reverse', False), 'star_price': plan.get('star_price', 0.0),
+                    'escrow': self.cfg.get_escrow_cash(t),
+                    'bb_lower': safe_bb_lower,
+                    'hybrid_base': hybrid_base,
+                    'hybrid_target': hybrid_target,
+                    'trigger_reason': trigger_reason,
+                    'sniper_trigger': sniper_pct
+                })
+                total_buy_needed += sum(o['price']*o['qty'] for o in plan['orders'] if o['side']=='BUY')
 
         surplus = cash - total_buy_needed
         rp_amount = surplus * 0.95 if surplus > 0 else 0
@@ -691,6 +689,7 @@ class TelegramController:
             parts = state.split("_")
             
             if state.startswith("SEED"):
+                if val < 0: return await update.message.reply_text("❌ 오류: 시드머니는 0 이상이어야 합니다.")
                 action, ticker = parts[1], parts[2]
                 curr = self.cfg.get_seed(ticker)
                 new_v = curr + val if action == "ADD" else (max(0, curr - val) if action == "SUB" else val)
@@ -698,6 +697,7 @@ class TelegramController:
                 await update.message.reply_text(f"✅ [{ticker}] 시드 변경: ${new_v:,.0f}")
                 
             elif state.startswith("CONF_SPLIT"):
+                if val < 1: return await update.message.reply_text("❌ 오류: 분할 횟수는 1 이상이어야 합니다.")
                 ticker = parts[2]
                 d = self.cfg._load_json(self.cfg.FILES["SPLIT"], self.cfg.DEFAULT_SPLIT)
                 d[ticker] = val; self.cfg._save_json(self.cfg.FILES["SPLIT"], d)
@@ -710,19 +710,26 @@ class TelegramController:
                 await update.message.reply_text(f"✅ [{ticker}] 목표: {val}%")
                 
             elif state.startswith("CONF_COMPOUND"):
+                if val < 0: return await update.message.reply_text("❌ 오류: 복리율은 0 이상이어야 합니다.")
                 ticker = parts[2]
                 self.cfg.set_compound_rate(ticker, val)
                 await update.message.reply_text(f"✅ [{ticker}] 졸업 시 자동 복리율: {val}%")
                 
             elif state.startswith("CONF_STOCK_SPLIT"):
+                if val <= 0: return await update.message.reply_text("❌ 오류: 액면 보정 비율은 0보다 커야 합니다.")
                 ticker = parts[2]
                 self.cfg.apply_stock_split(ticker, val)
                 await update.message.reply_text(f"✅ [{ticker}] 액면 보정 완료\n▫️ 모든 장부 기록이 {val}배 비율로 정밀하게 소급 조정되었습니다.")
                 
             elif state.startswith("CONF_SNIPER"):
+                if val < 0: return await update.message.reply_text("❌ 오류: 스나이퍼 타점은 0 이상이어야 합니다.")
                 ticker = parts[2]
                 self.cfg.set_sniper_trigger(ticker, val)
                 await update.message.reply_text(f"✅ [{ticker}] 스나이퍼 타점이 -{val}% 로 변경되었습니다.")
                 
             del self.user_states[chat_id]
-        except: await update.message.reply_text("❌ 오류: 숫자를 입력하세요.")
+            
+        except ValueError:
+            await update.message.reply_text("❌ 오류: 유효한 숫자를 입력하세요.")
+        except Exception as e:
+            await update.message.reply_text(f"❌ 알 수 없는 오류 발생: {str(e)}")

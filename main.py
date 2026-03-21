@@ -76,18 +76,23 @@ async def scheduled_token_check(context):
     context.job.data['broker']._get_access_token(force=True)
 
 async def scheduled_force_reset(context):
+    kst = pytz.timezone('Asia/Seoul')
+    now = datetime.datetime.now(kst)
+    target_hour, _ = get_target_hour()
+    
+    if now.hour != target_hour: return
     if not is_market_open(): return
+    
     app_data = context.job.data
     app_data['cfg'].reset_locks()
     
     for t in app_data['cfg'].get_active_tickers():
         app_data['cfg'].increment_reverse_day(t)
         
-        # 표시용으로 1회 저장 (실제 스나이퍼 타격은 실시간 연산값을 사용)
         bb_lower = await asyncio.to_thread(app_data['broker'].get_bb_lower, t)
         app_data['cfg'].set_daily_bb_lower(t, bb_lower)
         
-    await context.bot.send_message(chat_id=context.job.chat_id, text=f"🔓 <b>[{app_data.get('target_hour')}:00] 시스템 초기화 완료 (매매 잠금 해제 & 하단 스나이퍼 장전 & 리버스 카운트 누적)</b>", parse_mode='HTML')
+    await context.bot.send_message(chat_id=context.job.chat_id, text=f"🔓 <b>[{target_hour}:00] 시스템 초기화 완료 (매매 잠금 해제 & 하단 스나이퍼 장전 & 리버스 카운트 누적)</b>", parse_mode='HTML')
 
 async def scheduled_premarket_monitor(context):
     if not is_market_open(): return
@@ -95,7 +100,7 @@ async def scheduled_premarket_monitor(context):
     
     kst = pytz.timezone('Asia/Seoul')
     now = datetime.datetime.now(kst)
-    target_hour = app_data.get('target_hour', 18)
+    target_hour, _ = get_target_hour()
     
     if not (now.hour == target_hour and 0 <= now.minute < 30):
         return
@@ -166,21 +171,17 @@ async def scheduled_sniper_monitor(context):
             prev_c = await asyncio.to_thread(broker.get_previous_close, t)
             if curr_p <= 0: continue
             
-            # 🦇 [V19.1 패치] 하이브리드(MAX) 다이내믹 밴드 트리거 연산
             real_time_bb_lower = await asyncio.to_thread(broker.get_bb_lower, t, current_price=curr_p)
             
-            # 🦇 [V19.9 패치] 종목별 설정된 스나이퍼 타점 불러와서 하이브리드 베이스 계산
             sniper_pct = cfg.get_sniper_trigger(t)
             hybrid_multiplier = (100.0 - sniper_pct) / 100.0
             hybrid_base = min(avg_price, prev_c) * hybrid_multiplier
             
-            # 두 값을 맞붙여서 더 높은 가격(현실성 있는 바닥)을 최종 타격가로 확정
             raw_target_price = max(real_time_bb_lower, hybrid_base)
             target_buy_price = math.floor(raw_target_price * 100) / 100.0
             
             trigger_reason = "실시간 블밴 하한가" if real_time_bb_lower >= hybrid_base else f"-{sniper_pct}% 고정 하한가"
             
-            # 최종 확정된 타격가(target_buy_price)를 기준으로 스나이퍼 발동!
             if target_buy_price > 0 and curr_p <= target_buy_price and curr_p < avg_price:
                 
                 is_rev = cfg.get_reverse_state(t).get("is_active", False)
@@ -191,7 +192,7 @@ async def scheduled_sniper_monitor(context):
                     sniper_budget = cfg.get_seed(t) / split if split > 0 else 0
                 
                 if sniper_budget < curr_p:
-                    continue # 예산 고갈 시 텔레그램 스팸 원천 차단
+                    continue 
 
                 await asyncio.to_thread(broker.cancel_all_orders_safe, t, side="BUY")
                 await asyncio.sleep(1.0)
@@ -202,7 +203,6 @@ async def scheduled_sniper_monitor(context):
                     if target_buy_price > 0:
                         buy_qty = math.floor(sniper_budget / target_buy_price)
                         if buy_qty > 0:
-                            # 덫을 놓는 가격은 하이브리드 연산으로 결정된 최적의 바닥 가격
                             res = broker.send_order(t, "BUY", buy_qty, target_buy_price, "LIMIT")
                             if res.get('rt_cd') == '0':
                                 await asyncio.sleep(5.0)
@@ -212,19 +212,17 @@ async def scheduled_sniper_monitor(context):
                                 if not buy_unfilled:
                                     cfg.set_lock(t, "SNIPER") 
                                     
-                                    # 🛡️ 영수증 발급: 당일 체결 내역에서 방금 쏜 스나이퍼 매수건 실제 단가 뽑기
                                     kst = pytz.timezone('Asia/Seoul')
                                     today_kis_str = datetime.datetime.now(kst).strftime('%Y%m%d')
                                     execs = await asyncio.to_thread(broker.get_execution_history, t, today_kis_str, today_kis_str)
                                     
-                                    actual_buy_price = target_buy_price # 기본값
+                                    actual_buy_price = target_buy_price 
                                     if execs:
-                                        # 최근 체결된 순서대로 정렬
                                         execs.sort(key=lambda x: x.get('ord_tmd', '000000'), reverse=True)
                                         matched_qty = 0
                                         total_amt = 0.0
                                         for ex in execs:
-                                            if ex.get('sll_buy_dvsn_cd') == '02': # 매수
+                                            if ex.get('sll_buy_dvsn_cd') == '02': 
                                                 eqty = int(float(ex.get('ft_ccld_qty', '0')))
                                                 eprice = float(ex.get('ft_ccld_unpr3', '0'))
                                                 if matched_qty + eqty <= buy_qty:
@@ -258,7 +256,6 @@ async def scheduled_sniper_monitor(context):
                 if hunt_success:
                     continue
 
-                # 🦇 [V19.0 패치] 스팸 방지 1시간(3600초) 쿨타임
                 now_ts = time.time()
                 fail_history = app_data.setdefault('sniper_fail_ts', {})
                 if now_ts - fail_history.get(t, 0) > 3600:
@@ -307,18 +304,17 @@ async def scheduled_sniper_monitor(context):
                             if not sell_unfilled:
                                 cfg.set_lock(t, "SNIPER")
                                 
-                                # 🛡️ 영수증 발급: 당일 체결 내역에서 전량 익절 실제 단가 뽑기
                                 kst = pytz.timezone('Asia/Seoul')
                                 today_kis_str = datetime.datetime.now(kst).strftime('%Y%m%d')
                                 execs = await asyncio.to_thread(broker.get_execution_history, t, today_kis_str, today_kis_str)
                                 
-                                actual_sell_price = bid_price # 기본값
+                                actual_sell_price = bid_price 
                                 if execs:
                                     execs.sort(key=lambda x: x.get('ord_tmd', '000000'), reverse=True)
                                     matched_qty = 0
                                     total_amt = 0.0
                                     for ex in execs:
-                                        if ex.get('sll_buy_dvsn_cd') == '01': # 매도
+                                        if ex.get('sll_buy_dvsn_cd') == '01': 
                                             eqty = int(float(ex.get('ft_ccld_qty', '0')))
                                             eprice = float(ex.get('ft_ccld_unpr3', '0'))
                                             if matched_qty + eqty <= qty:
@@ -401,18 +397,17 @@ async def scheduled_sniper_monitor(context):
                                     cfg.set_lock(t, "SNIPER")
                                     phase = "전반전(별값 돌파)" if is_first_half else "후반전(본전+수수료 돌파)"
                                     
-                                    # 🛡️ 영수증 발급: 당일 체결 내역에서 쿼터 익절 실제 단가 뽑기
                                     kst = pytz.timezone('Asia/Seoul')
                                     today_kis_str = datetime.datetime.now(kst).strftime('%Y%m%d')
                                     execs = await asyncio.to_thread(broker.get_execution_history, t, today_kis_str, today_kis_str)
                                     
-                                    actual_sell_price = bid_price # 기본값
+                                    actual_sell_price = bid_price 
                                     if execs:
                                         execs.sort(key=lambda x: x.get('ord_tmd', '000000'), reverse=True)
                                         matched_qty = 0
                                         total_amt = 0.0
                                         for ex in execs:
-                                            if ex.get('sll_buy_dvsn_cd') == '01': # 매도
+                                            if ex.get('sll_buy_dvsn_cd') == '01': 
                                                 eqty = int(float(ex.get('ft_ccld_qty', '0')))
                                                 eprice = float(ex.get('ft_ccld_unpr3', '0'))
                                                 if matched_qty + eqty <= q_qty:
@@ -487,13 +482,19 @@ async def scheduled_sniper_monitor(context):
                     continue
 
 async def scheduled_regular_trade(context):
+    kst = pytz.timezone('Asia/Seoul')
+    now = datetime.datetime.now(kst)
+    target_hour, _ = get_target_hour()
+    
+    if now.hour != target_hour or now.minute != 30: return
     if not is_market_open(): return
+    
     chat_id = context.job.chat_id
     app_data = context.job.data
     cfg, broker, strategy, tx_lock = app_data['cfg'], app_data['broker'], app_data['strategy'], app_data['tx_lock']
     
     latest_version = cfg.get_latest_version()
-    await context.bot.send_message(chat_id=chat_id, text=f"🌃 <b>[{app_data.get('target_hour')}:30] 다이내믹 스노우볼 {latest_version} 정규장 주문을 준비합니다.</b>", parse_mode='HTML')
+    await context.bot.send_message(chat_id=chat_id, text=f"🌃 <b>[{target_hour}:30] 다이내믹 스노우볼 {latest_version} 정규장 주문을 준비합니다.</b>", parse_mode='HTML')
     
     async with tx_lock:
         cash, holdings = broker.get_account_balance()
@@ -588,7 +589,6 @@ def main():
     print(f"🚀 방치형 자동매매 {latest_version} (방탄 아키텍처 적용 완료)")
     print(f"📅 날짜 정보: {season_msg}")
     print(f"⏰ 자동 동기화: 08:30(여름) / 09:30(겨울) 자동 변경")
-    print(f"⏰ 정규장 주문: {TARGET_HOUR}:30")
     print("=" * 50)
     
     if ADMIN_CHAT_ID: cfg.set_chat_id(ADMIN_CHAT_ID)
@@ -619,7 +619,7 @@ def main():
     
     if cfg.get_chat_id():
         jq = app.job_queue
-        app_data = {'cfg': cfg, 'broker': broker, 'strategy': strategy, 'target_hour': TARGET_HOUR, 'bot': bot, 'tx_lock': tx_lock}
+        app_data = {'cfg': cfg, 'broker': broker, 'strategy': strategy, 'bot': bot, 'tx_lock': tx_lock}
         kst = pytz.timezone('Asia/Seoul')
         
         for tt in [datetime.time(7,0,tzinfo=kst), datetime.time(11,0,tzinfo=kst), datetime.time(16,30,tzinfo=kst), datetime.time(22,0,tzinfo=kst)]:
@@ -628,10 +628,11 @@ def main():
         jq.run_daily(scheduled_auto_sync_summer, time=datetime.time(8, 30, tzinfo=kst), days=tuple(range(7)), chat_id=cfg.get_chat_id(), data=app_data)
         jq.run_daily(scheduled_auto_sync_winter, time=datetime.time(9, 30, tzinfo=kst), days=tuple(range(7)), chat_id=cfg.get_chat_id(), data=app_data)
         
-        jq.run_daily(scheduled_force_reset, time=datetime.time(TARGET_HOUR, 0, tzinfo=kst), days=(0,1,2,3,4), chat_id=cfg.get_chat_id(), data=app_data)
+        for hour in [17, 18]:
+            jq.run_daily(scheduled_force_reset, time=datetime.time(hour, 0, tzinfo=kst), days=(0,1,2,3,4), chat_id=cfg.get_chat_id(), data=app_data)
+            jq.run_daily(scheduled_regular_trade, time=datetime.time(hour, 30, tzinfo=kst), days=(0,1,2,3,4), chat_id=cfg.get_chat_id(), data=app_data)
+
         jq.run_repeating(scheduled_premarket_monitor, interval=60, chat_id=cfg.get_chat_id(), data=app_data)
-        jq.run_daily(scheduled_regular_trade, time=datetime.time(TARGET_HOUR, 30, tzinfo=kst), days=(0,1,2,3,4), chat_id=cfg.get_chat_id(), data=app_data)
-        
         jq.run_repeating(scheduled_sniper_monitor, interval=60, chat_id=cfg.get_chat_id(), data=app_data)
         
     app.run_polling()
