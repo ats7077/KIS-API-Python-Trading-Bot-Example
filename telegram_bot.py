@@ -148,6 +148,7 @@ class TelegramController:
                 ma_5day = await asyncio.to_thread(self.broker.get_5day_ma, t)
                 
                 actual_avg = float(h['avg']) if h['avg'] else 0.0
+                actual_qty = int(h['qty'])
                 
                 if status_code == "CLOSE" and curr > 0: safe_prev_close = curr
                 else: safe_prev_close = prev_close if prev_close else 0.0
@@ -177,29 +178,39 @@ class TelegramController:
                 is_already_ordered = self.cfg.check_lock(t, "REG") or self.cfg.check_lock(t, "SNIPER")
                 
                 plan = self.strategy.get_plan(
-                    t, curr, actual_avg, int(h['qty']), safe_prev_close, ma_5day=ma_5day,
+                    t, curr, actual_avg, actual_qty, safe_prev_close, ma_5day=ma_5day,
                     market_type="REG", available_cash=allocated_cash[t], force_turbo_off=force_turbo_off,
                     is_simulation=is_already_ordered 
                 )
+                
                 split = self.cfg.get_split_count(t)
                 seed = self.cfg.get_seed(t)
                 ver = self.cfg.get_version(t)
                 
+                t_val = plan.get('t_val', 0.0)
+                is_rev = plan.get('is_reverse', False)
+                secret_quarter_target = 0.0
+                
+                # 🚨 [V21.3 수정] V17 모드라면 전반전/후반전/리버스 관계없이 무조건 스나이퍼 타점 계산하여 노출
+                if ver == "V17" and actual_qty > 0:
+                    secret_quarter_target = math.ceil(actual_avg * 1.0025 * 100) / 100.0
+                
                 ticker_data_list.append({
-                    'ticker': t, 'version': ver, 't_val': plan.get('t_val', 0.0), 'split': split, 'curr': curr, 'avg': actual_avg, 'qty': int(h['qty']),
-                    'profit_amt': (curr - actual_avg) * int(h['qty']) if int(h['qty']) > 0 else 0, 
+                    'ticker': t, 'version': ver, 't_val': t_val, 'split': split, 'curr': curr, 'avg': actual_avg, 'qty': actual_qty,
+                    'profit_amt': (curr - actual_avg) * actual_qty if actual_qty > 0 else 0, 
                     'profit_pct': (curr - actual_avg) / actual_avg * 100 if actual_avg > 0 else 0,
                     'turbo_txt': "ON" if self.cfg.get_turbo_mode() else "OFF",
                     'target': self.cfg.get_target_profit(t), 'star_pct': round(plan.get('star_ratio', 0) * 100, 2) if 'star_ratio' in plan else 0.0,
                     'seed': seed, 'one_portion': plan.get('one_portion', 0.0), 'plan': plan,
                     'is_locked': is_already_ordered, 'mode': "REG",
-                    'is_reverse': plan.get('is_reverse', False), 'star_price': plan.get('star_price', 0.0),
+                    'is_reverse': is_rev, 'star_price': plan.get('star_price', 0.0),
                     'escrow': self.cfg.get_escrow_cash(t),
                     'bb_lower': 0.0,  
                     'hybrid_base': 0.0, 
                     'hybrid_target': hybrid_target_price,
                     'trigger_reason': trigger_reason,
-                    'sniper_trigger': dynamic_pct 
+                    'sniper_trigger': dynamic_pct,
+                    'secret_quarter_target': secret_quarter_target 
                 })
                 total_buy_needed += sum(o['price']*o['qty'] for o in plan['orders'] if o['side']=='BUY')
 
@@ -313,7 +324,6 @@ class TelegramController:
                         if added_seed > 0: msg += f"\n💸 <b>자동 복리 +${added_seed:,.0f}</b> 이 다음 운용 시드에 완벽하게 추가되었습니다!"
                         await context.bot.send_message(chat_id, msg, parse_mode='HTML')
 
-                        # 🔥 V20.10: 졸업 인증 이미지 생성 및 텔레그램 즉시 발송 로직 추가
                         if new_hist:
                             try:
                                 img_path = self.view.create_profit_image(

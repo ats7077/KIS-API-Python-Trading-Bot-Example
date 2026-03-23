@@ -237,12 +237,11 @@ async def scheduled_sniper_monitor(context):
         for t in cfg.get_active_tickers():
             if cfg.get_version(t) != "V17": continue
             
-            # 🚨 [V20.12 박제: 공수 완벽 분리] 단일 SNIPER 잠금이 아닌 매수/매도 잠금을 별도로 체크합니다.
             lock_buy = cfg.check_lock(t, "SNIPER_BUY")
             lock_sell = cfg.check_lock(t, "SNIPER_SELL")
             
             if lock_buy and lock_sell:
-                continue # 상/하방 모두 발사 완료 시에만 패스
+                continue
             
             h = holdings.get(t, {'qty': 0, 'avg': 0})
             qty = int(h['qty'])
@@ -279,7 +278,6 @@ async def scheduled_sniper_monitor(context):
                     
                     if sniper_budget < curr_p: continue 
 
-                    # 🚨 [V20.12 박제: 공수 완벽 분리] 하방 발동 시 기존 매도(SELL) 주문은 절대 취소하지 않습니다. 매수 방어막(LOC 34)만 취소!
                     await asyncio.to_thread(broker.cancel_targeted_orders, t, "BUY", "34")
                     await asyncio.sleep(1.0)
                     
@@ -322,7 +320,6 @@ async def scheduled_sniper_monitor(context):
                         await asyncio.sleep(0.5)
                     
                     if hunt_success:
-                        # 🚨 [V20.12 박제] 하방 성공 시 매수(BUY) 감시만 끕니다. 매도(SELL) 감시는 계속 유지됩니다.
                         cfg.set_lock(t, "SNIPER_BUY") 
                         msg = f"💥 <b>[{t}] V20.11 시크릿 모드 가로채기(Intercept) 명중!</b>\n"
                         msg += f"📉 실시간 현재가(${curr_p:.2f})가 <b>[{trigger_reason}]</b>(${target_buy_price:.2f})을 터치했습니다!\n"
@@ -364,7 +361,6 @@ async def scheduled_sniper_monitor(context):
             star_price = math.ceil(avg_price * (1 + star_ratio) * 100) / 100.0
             
             if not lock_sell and curr_p >= target_price:
-                # 🚨 [V20.12 박제: 공수 완벽 분리] 상방 발동 시 매수(BUY) 방어막은 살려두고 기존 매도(SELL) 주문만 일괄 취소
                 await asyncio.to_thread(broker.cancel_all_orders_safe, t, side="SELL")
                 await asyncio.sleep(1.0)
                 
@@ -404,7 +400,6 @@ async def scheduled_sniper_monitor(context):
                     await asyncio.sleep(0.5)
                     
                 if hunt_success:
-                    # 🚨 [V20.12 박제] 상방(매도) 잠금! (잭팟이 터졌으므로 하방은 놔둬도 의미가 없으나 룰에 따라 SELL만 잠금)
                     cfg.set_lock(t, "SNIPER_SELL")
                     msg = f"🔥 <b>[{t}] 스나이퍼 잭팟 터짐! (목표가 돌파)</b>\n"
                     msg += f"🎯 실시간 매수 1호가(${bid_price:.2f})가 목표가(${target_price:.2f})를 돌파하여 <b>실제 단가 ${actual_sell_price:.2f}에 전량 강제 익절</b> 처리했습니다.\n"
@@ -432,16 +427,30 @@ async def scheduled_sniper_monitor(context):
                 continue
             
             # =========================================================================
-            # 3. 상방 스나이퍼 매도 (Quarter / 별값)
+            # 3. 상방 스나이퍼 매도 (Quarter / 리버스 / 별값 익절)
             # =========================================================================
-            is_first_half = t_val < (split / 2)
-            trigger_price = star_price if is_first_half else math.ceil(avg_price * 1.0025 * 100) / 100.0
+            # 🚨 [V21.1 박제: 리버스 전용 스나이퍼 3단 기어 탑재]
+            is_rev = cfg.get_reverse_state(t).get("is_active", False)
+            
+            if is_rev:
+                # 리버스 모드: 내 평단가(수수료 포함)를 절대 방어선으로 설정 (1.0025)
+                breakeven_price = math.ceil(avg_price * 1.0025 * 100) / 100.0
+                trigger_price = breakeven_price
+                # 리버스 모드의 탈출 수량 계산 (분할수에 따라 1/10 또는 1/20)
+                sell_divisor = 10 if split <= 20 else 20
+                q_qty = max(4, math.floor(qty / sell_divisor)) if qty >= 4 else qty
+                phase = "리버스 부분 익절(본전+수수료 돌파)"
+            else:
+                # 일반 모드: 전반전은 별값, 후반전은 본전
+                is_first_half = t_val < (split / 2)
+                trigger_price = star_price if is_first_half else math.ceil(avg_price * 1.0025 * 100) / 100.0
+                q_qty = math.ceil(qty / 4)
+                phase = "전반전(별값 돌파)" if is_first_half else "후반전(본전+수수료 돌파)"
             
             if not lock_sell and curr_p >= trigger_price:
                 unfilled = await asyncio.to_thread(broker.get_unfilled_orders_detail, t)
                 target_odno = None
                 
-                # 🚨 [V20.12 박제: 공수 완벽 분리] 쿼터 익절 발동 시 다른 방어막(특히 BUY)은 일절 건드리지 않고, 쿼터매도(LOC 34) 1개만 색출하여 취소
                 for o in unfilled:
                     if o.get('sll_buy_dvsn_cd') == '01' and o.get('ord_dvsn_cd') == '34': 
                         target_odno = o.get('odno')
@@ -451,7 +460,6 @@ async def scheduled_sniper_monitor(context):
                     await asyncio.to_thread(broker.cancel_order, t, target_odno)
                     await asyncio.sleep(1.0) 
                     
-                    q_qty = math.ceil(qty / 4)
                     rem_qty = q_qty
                     hunt_success = False
                     actual_sell_price = trigger_price
@@ -488,18 +496,39 @@ async def scheduled_sniper_monitor(context):
                         await asyncio.sleep(0.5)
                         
                     if hunt_success:
-                        # 🚨 [V20.12 박제] 상방 성공 시 매도(SELL) 감시만 끕니다. 하방(매수) 감시는 계속 유지됩니다.
                         cfg.set_lock(t, "SNIPER_SELL")
-                        phase = "전반전(별값 돌파)" if is_first_half else "후반전(본전+수수료 돌파)"
                         
                         msg = f"🔫 <b>[{t}] V17 시크릿 쿼터 익절 발동! ({phase})</b>\n"
                         msg += f"🎯 실시간 매수 1호가: ${bid_price:.2f} (트리거: ${trigger_price:.2f})\n"
                         msg += f"🛡️ 기존 쿼터 방어선만 해제하고 {q_qty}주를 <b>최적의 단가 ${actual_sell_price:.2f}에 즉시 낚아챘습니다!</b>\n"
                         
-                        # 🚨 [V20.12 박제] 기존 V17 잔재(스마트 밸런싱) 완전 철거! BUY 주문을 멋대로 취소하고 바꾸는 오지랖 로직 삭제
-                        msg += "\n🛡️ <b>[공수 완벽 분리 원칙 적용]</b>\n└ 쿼터 익절에 성공했습니다! 기존 하방 매수(LOC) 주문은 전혀 건드리지 않고 그대로 유지하며 스나이퍼 감시를 계속합니다."
+                        if not is_rev:
+                            await asyncio.to_thread(broker.cancel_targeted_orders, t, "BUY", "34")
+                            await asyncio.sleep(1.0)
+                            
+                            ma_5day = await asyncio.to_thread(broker.get_5day_ma, t)
+                            plan = strategy.get_plan(t, curr_p, avg_price, qty, prev_c, ma_5day=ma_5day, market_type="REG", available_cash=allocated_cash[t], force_turbo_off=force_turbo_off)
+                            
+                            smart_cores = plan.get('smart_core_orders', [])
+                            smart_bonus = plan.get('smart_bonus_orders', [])
+                            
+                            if len(smart_cores) == 0:
+                                msg += "\n🛑 <b>[스마트 밸런싱 발동]</b>\n└ 전반전 종가 관망 모드로 전환 (오늘 추가 매수 안 함)"
+                            else:
+                                msg += "\n🦇 <b>[스마트 방어 매수 장전] (플랜 B 전환)</b>\n"
+                                for o in smart_cores:
+                                    buy_res = broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
+                                    err_msg = buy_res.get('msg1')
+                                    msg += f"└ {o['desc']} {o['qty']}주: {'✅' if buy_res.get('rt_cd') == '0' else f'❌({err_msg})'}\n"
+                                    await asyncio.sleep(0.2)
+                                for o in smart_bonus:
+                                    buy_res = broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
+                                    msg += f"└ {o['desc']} {o['qty']}주: {'✅' if buy_res.get('rt_cd') == '0' else '❌'}\n"
+                                    await asyncio.sleep(0.2)
+                        else:
+                            msg += "\n🛡️ <b>[공수 완벽 분리 원칙 적용]</b>\n└ 쿼터 익절에 성공했습니다! 기존 하방 매수(LOC) 주문은 전혀 건드리지 않고 그대로 유지하며 스나이퍼 감시를 계속합니다."
+                            
                         msg += "\n🔒 당일 상방(매도) 쿼터 스나이퍼 감시를 종료합니다."
-                        
                         await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
                         continue
                         
@@ -630,7 +659,7 @@ def main():
     latest_version = cfg.get_latest_version() 
     
     print("=" * 50)
-    print(f"🚀 방치형 자동매매 {latest_version} (V20 아키텍처 탑재)")
+    print(f"🚀 방치형 자동매매 {latest_version} (V21 아키텍처 탑재)")
     print(f"📅 날짜 정보: {season_msg}")
     print(f"⏰ 자동 동기화: 08:30(여름) / 09:30(겨울) 자동 변경")
     print("=" * 50)

@@ -71,8 +71,6 @@ class TelegramView:
         if not history_data:
             return "📭 기록된 버전 히스토리가 없습니다.", None
 
-        # 🚨 [V21.0 박제] 텔레그램 4096자 에러 방지용 페이징 슬라이싱
-        # history_data는 과거(index 0)부터 최신(index -1) 순서로 쌓인 단일 파일입니다.
         items_per_page = 5
         total_items = len(history_data)
         total_pages = math.ceil(total_items / items_per_page)
@@ -82,7 +80,6 @@ class TelegramView:
         else:
             page_index = max(0, min(page_index, total_pages - 1))
 
-        # 🎯 끝에서부터 5개씩 슬라이싱 (페이지 0이 가장 최신 구간)
         end_idx = total_items - (page_index * items_per_page)
         start_idx = max(0, end_idx - items_per_page)
         items = history_data[start_idx:end_idx]
@@ -93,7 +90,6 @@ class TelegramView:
             title = f"📚 <b>[ 과거 업데이트 내역 (Page {page_index + 1}/{total_pages}) ]</b>\n\n"
 
         msg = title
-        # 슬라이싱된 5개 아이템은 자연스럽게 '위가 약간 과거, 아래가 가장 최신' 순으로 출력됨
         for h in items:
             if isinstance(h, str):
                 parts = h.split(' ', 2)
@@ -112,10 +108,8 @@ class TelegramView:
         
         nav_row = []
         if page_index < total_pages - 1:
-            # page_index가 커질수록 과거 구간으로 이동
             nav_row.append(InlineKeyboardButton("◀️ 과거 기록", callback_data=f"VERSION:PAGE:{page_index + 1}"))
         if page_index > 0:
-            # page_index가 작아질수록 최신 구간으로 이동
             nav_row.append(InlineKeyboardButton("최신 기록 ▶️", callback_data=f"VERSION:PAGE:{page_index - 1}"))
             
         if nav_row:
@@ -204,14 +198,19 @@ class TelegramView:
             hybrid_target = t_info.get('hybrid_target', 0.0)
             sniper_pct = t_info.get('sniper_trigger', 9.0) 
             trigger_reason = t_info.get('trigger_reason', '')
+            secret_quarter_target = t_info.get('secret_quarter_target', 0.0) # 🚨 V21.3 상방 타점 변수
             
             if v_mode == "V17":
                 if trigger_reason.startswith("🛑"):
                     body_msg += f"📉 <b>{trigger_reason}</b>\n"
                 elif hybrid_target > 0:
-                    body_msg += f"📉 <b>스나이퍼({trigger_reason}): ${hybrid_target:.2f} 이하 대기</b>\n"
+                    body_msg += f"📉 <b>스나이퍼(-{sniper_pct:.2f}%): ${hybrid_target:.2f} 이하 대기</b>\n"
                 else:
                     body_msg += f"📉 <b>스나이퍼: 장전 대기 중</b>\n"
+                
+                # 🚨 [V21.3 핫픽스] 상방 스나이퍼 대기 문구 추가 (제안 A 적용)
+                if secret_quarter_target > 0:
+                    body_msg += f"🦇 <b>쿼터 스나이퍼: ${secret_quarter_target:.2f} 이상 대기</b>\n"
 
             body_msg += f"📋 <b>[주문 계획 - {proc_status}]</b>\n"
             

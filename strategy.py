@@ -244,31 +244,29 @@ class InfiniteStrategy:
                             safe_jup_price = max(0.01, capped_jup_price)
                             bonus_orders.append({"side": "BUY", "price": safe_jup_price, "qty": 1, "type": "LOC", "desc": f"🧹줍줍({i})"})
 
+            # ==========================================================
+            # 🚨 [V21.3 오리지널 룰 복구] 정규장 LOC 매도는 무조건 별값(star_price)
+            # ==========================================================
             if qty > 0:
                 q_qty = math.ceil(qty / 4)
                 rem_qty = qty - q_qty
                 
+                # V17이든 V14이든 17:30 정규장 LOC 쿼터매도는 오리지널 무매 원칙을 철저히 준수함
+                if star_price > 0 and q_qty > 0:
+                    core_orders.append({"side": "SELL", "price": star_price, "qty": q_qty, "type": "LOC", "desc": "🌟별값매도"})
+                if target_price > 0 and rem_qty > 0:
+                    core_orders.append({"side": "SELL", "price": target_price, "qty": rem_qty, "type": "LIMIT", "desc": "🎯목표매도"})
+                    
+                # V17 스나이퍼(시크릿) 전용: 쿼터 익절 성공 시 관망 대비용 스마트 방어 매수 장전
                 if version == "V17":
-                    sell_trigger = star_price if t_val < (split / 2) else math.ceil(avg_price * 1.0025 * 100) / 100.0
-                    if sell_trigger > 0 and q_qty > 0:
-                        core_orders.append({"side": "SELL", "price": sell_trigger, "qty": q_qty, "type": "LOC", "desc": "🦇시크릿쿼터"})
-                    if target_price > 0 and rem_qty > 0:
-                        core_orders.append({"side": "SELL", "price": target_price, "qty": rem_qty, "type": "LIMIT", "desc": "🎯목표매도"})
-                        
                     if can_buy and p_avg > 0:
                         smart_core_orders.append({"side": "BUY", "price": p_avg, "qty": N, "type": "LOC", "desc": "🦇스마트방어(평단)"})
                         for i in range(1, 6):
                             j_price = self._floor(one_portion_amt / (N + i))
                             c_j_price = round(min(j_price, p_avg - 0.01), 2)
-                            # 🎯 [V20.2 핫픽스] 마이너스 호가 하한선 방어
                             if c_j_price > 0:
                                 safe_c_j_price = max(0.01, c_j_price)
                                 smart_bonus_orders.append({"side": "BUY", "price": safe_c_j_price, "qty": 1, "type": "LOC", "desc": f"🧹스마트줍줍({i})"})
-                else:
-                    if star_price > 0 and q_qty > 0:
-                        core_orders.append({"side": "SELL", "price": star_price, "qty": q_qty, "type": "LOC", "desc": "🌟별값매도"})
-                    if target_price > 0 and rem_qty > 0:
-                        core_orders.append({"side": "SELL", "price": target_price, "qty": rem_qty, "type": "LIMIT", "desc": "🎯목표매도"})
 
             core_orders, bonus_orders, smart_core_orders, smart_bonus_orders = apply_wash_trade_shield(core_orders, bonus_orders, smart_core_orders, smart_bonus_orders)        
             orders = core_orders + bonus_orders
