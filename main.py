@@ -2,6 +2,7 @@
 # [main.py]
 # ⚠️ 이 주석 및 파일명 표기는 절대 지우지 마세요.
 # ==========================================================
+
 import os
 import logging
 import datetime
@@ -634,14 +635,16 @@ async def scheduled_regular_trade(context):
     cfg, broker, strategy, tx_lock = app_data['cfg'], app_data['broker'], app_data['strategy'], app_data['tx_lock']
     
     latest_version = cfg.get_latest_version()
-    await context.bot.send_message(chat_id=chat_id, text=f"🌃 <b>[{target_hour}:30] 다이내믹 스노우볼 {latest_version} 정규장 주문을 준비합니다.</b>", parse_mode='HTML')
-    
+    await context.bot.send_message(chat_id=chat_id, text=f"🌃 <b>[{target_hour}:30] 다이내믹 스노우볼 {latest_version} 정규장 주문을 준비합니다.</b> (통신 지연 시 최대 15회 자동 재시도)", parse_mode='HTML')
+
+    MAX_RETRIES = 15
+    RETRY_DELAY = 60
+
     async def _do_regular_trade():
         async with tx_lock:
             cash, holdings = broker.get_account_balance()
             if holdings is None:
-                await context.bot.send_message(chat_id=chat_id, text="❌ 계좌 정보를 불러오지 못해 정규장 주문을 취소합니다.", parse_mode='HTML')
-                return
+                return False, "❌ 계좌 정보를 불러오지 못했습니다."
 
             sorted_tickers, allocated_cash, force_turbo_off = get_budget_allocation(cash, cfg.get_active_tickers(), cfg)
             
@@ -697,12 +700,28 @@ async def scheduled_regular_trade(context):
                     
                 await context.bot.send_message(chat_id=chat_id, text=msgs[t], parse_mode='HTML')
 
-    try:
-        await asyncio.wait_for(_do_regular_trade(), timeout=300.0) 
-    except asyncio.TimeoutError:
-        await context.bot.send_message(chat_id=chat_id, text="🚨 <b>[긴급 에러] 정규장 통합 주문 처리 중 API 응답 지연으로 타임아웃이 발생했습니다. 통제권(Lock)을 강제 반환합니다!</b>", parse_mode='HTML')
-    except Exception as e:
-        await context.bot.send_message(chat_id=chat_id, text=f"🚨 <b>[긴급 에러] 정규장 주문 처리 중 예기치 않은 오류 발생:</b>\n{e}", parse_mode='HTML')
+            return True, "SUCCESS"
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            success, fail_reason = await asyncio.wait_for(_do_regular_trade(), timeout=300.0)
+            if success:
+                if attempt > 1:
+                    await context.bot.send_message(chat_id=chat_id, text=f"✅ <b>[통신 복구] {attempt}번째 재시도 끝에 정규장 주문 처리를 완수했습니다!</b>", parse_mode='HTML')
+                return 
+            else:
+                logging.warning(f"정규장 주문 실패 ({attempt}/{MAX_RETRIES}): {fail_reason}")
+        except asyncio.TimeoutError:
+            logging.warning(f"정규장 주문 타임아웃 ({attempt}/{MAX_RETRIES})")
+        except Exception as e:
+            logging.error(f"정규장 주문 에러 ({attempt}/{MAX_RETRIES}): {e}")
+
+        if attempt < MAX_RETRIES:
+            if attempt == 1 or attempt % 5 == 0:
+                await context.bot.send_message(chat_id=chat_id, text=f"⚠️ <b>[API 통신 지연 감지 - {attempt}/{MAX_RETRIES}회]</b>\n한투 서버 불안정으로 계좌 조회 실패. 1분 뒤 끈질기게 다시 진입합니다! 🛡️", parse_mode='HTML')
+            await asyncio.sleep(RETRY_DELAY)
+
+    await context.bot.send_message(chat_id=chat_id, text="🚨 <b>[긴급 에러] 최대 15회(15분) 재시도에도 불구하고 KIS API 통신 복구에 실패하여, 금일 정규장 주문을 최종 취소합니다. 수동 점검이 필요합니다!</b>", parse_mode='HTML')
 
 async def scheduled_auto_sync_summer(context):
     if not is_dst_active(): return 
