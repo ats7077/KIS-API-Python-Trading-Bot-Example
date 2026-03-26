@@ -158,7 +158,14 @@ async def scheduled_self_cleaning(context):
     logging.info("🧹 [시스템 자정 작업 완료] 7일 초과 로그/백업 및 24시간 초과 임시 파일 소각 완료")
 
 async def scheduled_token_check(context):
-    context.job.data['broker']._get_access_token(force=True)
+    # 💡 [핵심 패치] 천둥소리를 내는 소떼(Thundering Herd) 현상 방지를 위한 무작위 지터(Jitter) 생성
+    jitter_seconds = random.randint(0, 180)
+    logging.info(f"🔑 [API 토큰 갱신] 서버 동시 접속 부하 방지를 위해 {jitter_seconds}초 대기 후 발급을 시작합니다.")
+    await asyncio.sleep(jitter_seconds)
+    
+    # 동기 함수인 토큰 발급을 논블로킹 스레드에서 실행하여 이벤트 루프 멈춤 방지
+    await asyncio.to_thread(context.job.data['broker']._get_access_token, force=True)
+    logging.info("🔑 [API 토큰 갱신] 토큰 갱신이 안전하게 완료되었습니다.")
 
 async def scheduled_force_reset(context):
     kst = pytz.timezone('Asia/Seoul')
@@ -177,12 +184,62 @@ async def scheduled_force_reset(context):
     
     try:
         app_data = context.job.data
-        app_data['cfg'].reset_locks()
+        cfg = app_data['cfg']
+        broker = app_data['broker']
+        tx_lock = app_data['tx_lock']
+        chat_id = context.job.chat_id
         
-        for t in app_data['cfg'].get_active_tickers():
-            app_data['cfg'].increment_reverse_day(t)
+        cfg.reset_locks()
+        
+        # 💡 [핵심 수술 완료] 17시(또는 18시) 정각에 리버스 탈출 여부 일일 1회 확정 평가 진행
+        async with tx_lock:
+            _, holdings = broker.get_account_balance()
             
-        await context.bot.send_message(chat_id=context.job.chat_id, text=f"🔓 <b>[{target_hour}:00] 시스템 초기화 완료 (매매 잠금 해제 & 스나이퍼 장전 & 리버스 카운트 누적)</b>", parse_mode='HTML')
+        if holdings is None:
+            holdings = {}
+            
+        msg_addons = ""
+        
+        for t in cfg.get_active_tickers():
+            rev_state = cfg.get_reverse_state(t)
+            
+            if rev_state.get("is_active"):
+                actual_avg = float(holdings.get(t, {'avg': 0})['avg'])
+                curr_p = await asyncio.to_thread(broker.get_current_price, t)
+                
+                if curr_p > 0 and actual_avg > 0:
+                    curr_ret = (curr_p - actual_avg) / actual_avg * 100.0
+                    exit_target = rev_state.get("exit_target", 0.0)
+                    
+                    if curr_ret >= exit_target:
+                        # 🎯 탈출 조건 만족: 리버스 강제 해제 및 에스크로 소각
+                        cfg.set_reverse_state(t, False, 0, 0.0)
+                        cfg.clear_escrow_cash(t)
+                        
+                        # 장부 꼬리표 떼기
+                        ledger_data = cfg.get_ledger()
+                        changed = False
+                        for lr in ledger_data:
+                            if lr.get('ticker') == t and lr.get('is_reverse', False):
+                                lr['is_reverse'] = False
+                                changed = True
+                        if changed:
+                            cfg._save_json(cfg.FILES["LEDGER"], ledger_data)
+                            
+                        msg_addons += f"\n🌤️ <b>[{t}] 리버스 목표 달성({curr_ret:.2f}%)!</b> 격리 병동 졸업 및 Escrow 해제 완료!"
+                    else:
+                        # 🎯 탈출 실패: 리버스 일차 정상 누적
+                        cfg.increment_reverse_day(t)
+                else:
+                    # 가격 조회 실패 시에도 일단 일차 누적
+                    cfg.increment_reverse_day(t)
+            else:
+                # 리버스가 아닐 경우 그대로 패스
+                cfg.increment_reverse_day(t)
+                
+        final_msg = f"🔓 <b>[{target_hour}:00] 시스템 초기화 완료 (매매 잠금 해제 & 스나이퍼 장전)</b>" + msg_addons
+        await context.bot.send_message(chat_id=chat_id, text=final_msg, parse_mode='HTML')
+        
     except Exception as e:
         await context.bot.send_message(chat_id=context.job.chat_id, text=f"🚨 <b>시스템 초기화 중 에러 발생:</b> {e}", parse_mode='HTML')
 
@@ -370,10 +427,11 @@ async def scheduled_sniper_monitor(context):
 
                         now_ts = time.time()
                         fail_history = app_data.setdefault('sniper_fail_ts', {})
-                        if now_ts - fail_history.get(t, 0) > 3600:
-                            msg = f"🛡️ <b>[{t}] V20.11 가로채기 덫 기습 실패 (1시간 쿨타임 진입)</b>\n"
+                        # 💡 [패치] 스나이퍼 매수 실패 시 쿨타임 3600초 -> 600초(10분)로 대폭 축소
+                        if now_ts - fail_history.get(t, 0) > 600:
+                            msg = f"🛡️ <b>[{t}] V20.11 가로채기 덫 기습 실패 (10분 쿨타임 진입)</b>\n"
                             msg += f"📉 동적 방어선(${target_buy_price:.2f})에 3회 지정가 덫을 던졌으나 잔량이 남았습니다.\n"
-                            msg += f"🦇 매수 스나이퍼는 1시간 동안 숨을 죽이며, 취소했던 일반 방어 매수(LOC) 주문만 호가창에 정밀 복구합니다."
+                            msg += f"🦇 매수 스나이퍼는 10분 동안 숨을 죽이며, 취소했던 일반 방어 매수(LOC) 주문만 호가창에 정밀 복구합니다."
                             await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
                             fail_history[t] = now_ts
                         
@@ -449,10 +507,11 @@ async def scheduled_sniper_monitor(context):
                         
                     now_ts = time.time()
                     fail_history_j = app_data.setdefault('sniper_j_fail_ts', {})
-                    if now_ts - fail_history_j.get(t, 0) > 3600:
+                    # 💡 [패치] 스나이퍼 매도(잭팟) 실패 시 쿨타임 3600초 -> 600초(10분)로 대폭 축소
+                    if now_ts - fail_history_j.get(t, 0) > 600:
                         msg = f"🛡️ <b>[{t}] 스나이퍼 잭팟 기습 실패 (방어선 복구)</b>\n"
                         msg += f"🎯 3회에 걸쳐 전량 익절을 시도했으나 체결되지 않았습니다.\n"
-                        msg += f"🦇 취소했던 원래의 매도(SELL) 주문을 다시 호가창에 정밀 장전합니다."
+                        msg += f"🦇 취소했던 원래의 매도(SELL) 주문을 다시 호가창에 정밀 장전합니다. (10분 쿨타임 적용)"
                         await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
                         fail_history_j[t] = now_ts
                     
@@ -502,10 +561,11 @@ async def scheduled_sniper_monitor(context):
                     else:
                         now_ts = time.time()
                         fail_history_sync = app_data.setdefault('sniper_sync_fail_ts', {})
-                        if now_ts - fail_history_sync.get(t, 0) > 600:
+                        # 💡 [패치] 기존 주문 취소 동기화 실패 대기시간 600초 -> 300초(5분)로 축소
+                        if now_ts - fail_history_sync.get(t, 0) > 300:
                             msg = f"⚠️ <b>[{t}] 스나이퍼 대기 중 (이중 체결 방지)</b>\n"
                             msg += f"가격(${curr_p:.2f})이 타점(${trigger_price:.2f})을 돌파했으나, 취소해야 할 기존 덫(LOC)을 한투 서버에서 찾지 못했습니다.\n"
-                            msg += "중복 매도를 막기 위해 10분 뒤 다시 식별을 시도합니다."
+                            msg += "중복 매도를 막기 위해 5분 뒤 다시 식별을 시도합니다."
                             await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
                             fail_history_sync[t] = now_ts
                         continue
@@ -567,10 +627,11 @@ async def scheduled_sniper_monitor(context):
                         
                     now_ts = time.time()
                     fail_history_q = app_data.setdefault('sniper_q_fail_ts', {})
-                    if now_ts - fail_history_q.get(t, 0) > 3600:
+                    # 💡 [패치] 스나이퍼 매도(쿼터) 실패 시 쿨타임 3600초 -> 600초(10분)로 대폭 축소
+                    if now_ts - fail_history_q.get(t, 0) > 600:
                         msg = f"🛡️ <b>[{t}] 스나이퍼 쿼터 기습 실패 (방어선 복구)</b>\n"
                         msg += f"🎯 3회에 걸쳐 쿼터 익절을 시도했으나 체결되지 않았습니다.\n"
-                        msg += f"🦇 취소했던 원래의 쿼터 방어 주문(LOC 매도) 단 1개를 다시 장전합니다."
+                        msg += f"🦇 취소했던 원래의 쿼터 방어 주문(LOC 매도) 단 1개를 다시 장전합니다. (10분 쿨타임 적용)"
                         await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
                         fail_history_q[t] = now_ts
                     

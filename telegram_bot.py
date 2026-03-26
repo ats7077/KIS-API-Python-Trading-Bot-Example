@@ -307,27 +307,6 @@ class TelegramController:
                 actual_qty = int(holdings.get(ticker, {'qty': 0})['qty'])
                 actual_avg = float(holdings.get(ticker, {'avg': 0})['avg'])
                 
-                rev_state = self.cfg.get_reverse_state(ticker)
-                if rev_state.get("is_active"):
-                    curr_p = await asyncio.to_thread(self.broker.get_current_price, ticker)
-                    if curr_p > 0 and actual_avg > 0:
-                        curr_ret = (curr_p - actual_avg) / actual_avg * 100.0
-                        exit_target = rev_state.get("exit_target", 0.0) 
-                        if curr_ret >= exit_target:
-                            self.cfg.set_reverse_state(ticker, False, 0, 0.0)
-                            self.cfg.clear_escrow_cash(ticker)
-                            
-                            ledger_data = self.cfg.get_ledger()
-                            changed = False
-                            for lr in ledger_data:
-                                if lr.get('ticker') == ticker and lr.get('is_reverse', False):
-                                    lr['is_reverse'] = False
-                                    changed = True
-                            if changed:
-                                self.cfg._save_json(self.cfg.FILES["LEDGER"], ledger_data)
-                                
-                            await context.bot.send_message(chat_id, f"🌤️ <b>[{ticker}] 리버스 목표 달성({curr_ret:.2f}%)!</b>\n격리 병동을 공식 졸업하고 가상 장부(Escrow) 해제합니다.", parse_mode='HTML')
-                
                 recs = [r for r in self.cfg.get_ledger() if r['ticker'] == ticker]
                 ledger_qty, avg_price, _, _ = self.cfg.calculate_holdings(ticker, recs)
                 

@@ -166,23 +166,25 @@ class TelegramView:
                 body_msg += f"⚠️ <b>[🚨 비상 상황: {t} 긴급 수혈 중]</b>\n"
                 body_msg += f"❗ <i>에스크로 금고가 바닥나 강제 매도를 통해 현금을 생성합니다.</i>\n\n"
             
+            # 💡 [UI 패치] 괄호로 묶여있던 예산 정보를 분리하여 새로운 줄(🛒)로 출력
             if is_rev:
-                bdg_txt = f"리버스 잔금쿼터 ${t_info['one_portion']:,.0f}"
+                bdg_txt = f"리버스 잔금쿼터: ${t_info['one_portion']:,.0f}"
                 icon = "🩸" if proc_status == "🩸리버스(긴급수혈)" else "🔄"
                 body_msg += f"{icon} <b>[{t}] {v_mode_display} 리버스</b>\n"
                 body_msg += f"📈 진행: <b>{t_info['t_val']:.4f}T / {int(t_info['split'])}분할</b>\n"
             else:
-                bdg_txt = f"오늘 예산 ${t_info['one_portion']:,.0f}" if v_mode in ["V14", "V17"] else f"1회 ${t_info['one_portion']:,.0f}"
+                bdg_txt = f"당일 예산: ${t_info['one_portion']:,.0f}" if v_mode in ["V14", "V17"] else f"1회 매수금: ${t_info['one_portion']:,.0f}"
                 body_msg += f"{main_icon} <b>[{t}] {v_mode_display}</b>\n"
                 body_msg += f"📈 진행: <b>{t_info['t_val']:.4f}T / {int(t_info['split'])}분할</b>\n"
             
-            body_msg += f"💵 총 시드: ${t_info['seed']:,.0f} ({bdg_txt})\n"
+            body_msg += f"💵 총 시드: ${t_info['seed']:,.0f}\n"
+            body_msg += f"🛒 <b>{bdg_txt}</b>\n"
             
             escrow = t_info.get('escrow', 0.0)
             if escrow > 0:
-                body_msg += f"🔐 <b>내 금고 보호액: ${escrow:,.2f}</b>\n"
+                body_msg += f"🔐 내 금고 보호액: ${escrow:,.2f}\n"
             elif is_rev and proc_status == "🩸리버스(긴급수혈)":
-                body_msg += f"🔐 <b>내 금고 보호액: $0.00 (Empty 🚨)</b>\n"
+                body_msg += f"🔐 내 금고 보호액: $0.00 (Empty 🚨)\n"
                 
             body_msg += f"💰 현재 ${t_info['curr']:,.2f} / 평단 ${t_info['avg']:,.2f} ({t_info['qty']}주)\n"
             
@@ -210,7 +212,7 @@ class TelegramView:
             hybrid_target = t_info.get('hybrid_target', 0.0)
             sniper_pct = t_info.get('sniper_trigger', 9.0) 
             trigger_reason = t_info.get('trigger_reason', '')
-            secret_quarter_target = t_info.get('secret_quarter_target', 0.0) # 🚨 V21.3 상방 타점 변수
+            secret_quarter_target = t_info.get('secret_quarter_target', 0.0)
             
             if v_mode == "V17":
                 if trigger_reason.startswith("🛑"):
@@ -220,7 +222,6 @@ class TelegramView:
                 else:
                     body_msg += f"📉 <b>스나이퍼: 장전 대기 중</b>\n"
                 
-                # 🚨 [V21.3 핫픽스] 상방 스나이퍼 대기 문구 추가 (제안 A 적용)
                 if secret_quarter_target > 0:
                     body_msg += f"🦇 <b>쿼터 스나이퍼: ${secret_quarter_target:.2f} 이상 대기</b>\n"
 
@@ -355,7 +356,7 @@ class TelegramView:
         sign = "-" if profit < 0 else "+"
         draw.text((W/2, y), f"{sign}${abs(profit):,.2f}", font=f_p, fill=color, anchor="mm")
         y += 75
-        draw.text((W/2, y), f"{sign}{abs(yield_pct):,.2f}%", font=f_y, fill=color, anchor="mm")
+        draw.text((W/2, y), f"{sign}{abs(yield_pct):,.2f}", font=f_y, fill=color, anchor="mm")
         
         y += 110
         draw.rectangle([40, y, 290, y + 110], fill="#1C1C1E")

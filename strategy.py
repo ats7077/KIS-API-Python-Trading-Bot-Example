@@ -105,8 +105,22 @@ class InfiniteStrategy:
             if ma_5day > 0: star_price = round(ma_5day, 2)
             else: star_price = round(avg_price, 2)
 
-            escrow_cash = self.cfg.get_escrow_cash(ticker)
-            one_portion_amt = (escrow_cash / 4.0) if escrow_cash > 0 else base_portion
+            # 💡 [V21.15 긴급 수술] 제논의 역설(리버스 쿼터 잔금 무한 축소) 완벽 방어
+            # 남은 에스크로(escrow_cash)를 계속 4로 나누지 않고, 리버스 기간 동안 발생한 '총 매도 금액(생성된 원금)'을 4로 고정하여 나눔
+            ledger = self.cfg.get_ledger()
+            total_sell_in_rev = 0.0
+            for r in reversed(ledger):
+                if r.get('ticker') == ticker:
+                    if r.get('is_reverse', False):
+                        if r['side'] == 'SELL':
+                            total_sell_in_rev += (r['qty'] * r['price'])
+                    else:
+                        break
+                        
+            if total_sell_in_rev > 0:
+                one_portion_amt = total_sell_in_rev / 4.0
+            else:
+                one_portion_amt = base_portion
         else:
             star_price = self._ceil(avg_price * (1 + star_ratio)) if avg_price > 0 else 0
             
