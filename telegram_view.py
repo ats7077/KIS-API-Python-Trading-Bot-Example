@@ -17,9 +17,10 @@ class TelegramView:
         season_short = "🌞서머타임 ON" if "Summer" in season_icon else "❄️서머타임 OFF"
         sync_time = "08:30" if target_hour == 17 else "09:30"
 
+        # 💡 [승승장군 핵심 수술] 모바일 1줄 최적화 및 동적 버전 연동 완료
         return (
-            f"🌌 <b>[ 다이내믹 스노우볼 TrueSync {latest_version} ]</b>\n" 
-            f"⚡ <b>API 팩트 기반 무결성 동기화 엔진 가동</b> \n\n"
+            f"🌌 <b>[ 인피니트 스노우볼 {latest_version} ]</b>\n" 
+            f"⚡ <b>다이내믹 추적 스나이퍼 & API 무결성</b> \n\n"
             f"🕒 <b>[ 운영 스케줄 ({season_short}) ]</b>\n"
             f"🔹 6시간 간격 : 🔑 API 토큰 자동 갱신\n"
             f"🔹 {sync_time} : 📝 잔고 동기화 & 자동 복리\n"
@@ -166,7 +167,6 @@ class TelegramView:
                 body_msg += f"⚠️ <b>[🚨 비상 상황: {t} 긴급 수혈 중]</b>\n"
                 body_msg += f"❗ <i>에스크로 금고가 바닥나 강제 매도를 통해 현금을 생성합니다.</i>\n\n"
             
-            # 💡 [UI 패치] 괄호로 묶여있던 예산 정보를 분리하여 새로운 줄(🛒)로 출력
             if is_rev:
                 bdg_txt = f"리버스 잔금쿼터: ${t_info['one_portion']:,.0f}"
                 icon = "🩸" if proc_status == "🩸리버스(긴급수혈)" else "🔄"
@@ -213,12 +213,18 @@ class TelegramView:
             sniper_pct = t_info.get('sniper_trigger', 9.0) 
             trigger_reason = t_info.get('trigger_reason', '')
             secret_quarter_target = t_info.get('secret_quarter_target', 0.0)
+            tracking_info = t_info.get('tracking_info', {}) 
             
             if v_mode == "V17":
                 if trigger_reason.startswith("🛑"):
                     body_msg += f"📉 <b>{trigger_reason}</b>\n"
                 elif hybrid_target > 0:
-                    body_msg += f"📉 <b>스나이퍼(-{sniper_pct:.2f}%): ${hybrid_target:.2f} 이하 대기</b>\n"
+                    if tracking_info.get('is_tracking', False):
+                        lowest = tracking_info.get('lowest_price', hybrid_target)
+                        trigger_val = 1.5 if t == "SOXL" else 1.0
+                        body_msg += f"🎯 <b>타점 이탈! 바닥 추적 중 (최저: ${lowest:.2f} / 목표: +{trigger_val}%)</b>\n"
+                    else:
+                        body_msg += f"📉 <b>스나이퍼 방어선(-{sniper_pct:.2f}%): ${hybrid_target:.2f} 이하 대기</b>\n"
                 else:
                     body_msg += f"📉 <b>스나이퍼: 장전 대기 중</b>\n"
                 

@@ -142,6 +142,9 @@ class TelegramController:
             ticker_data_list = []
             total_buy_needed = 0.0
 
+            # 💡 [수술 패치] main.py의 스나이퍼 루프가 사용하는 전역 캐시(app_data)에 접근하여 추적 상태를 빼옵니다
+            tracking_cache = context.job_queue.jobs()[0].data.get('sniper_tracking', {}) if context.job_queue and context.job_queue.jobs() else {}
+
             for t in sorted_tickers:
                 h = holdings.get(t, {'qty':0, 'avg':0})
                 curr = await asyncio.to_thread(self.broker.get_current_price, t, is_market_closed=(status_code == "CLOSE"))
@@ -212,6 +215,9 @@ class TelegramController:
                         is_first_half = t_val < (split / 2)
                         secret_quarter_target = plan.get('star_price', 0.0) if is_first_half else math.ceil(actual_avg * 1.0025 * 100) / 100.0
 
+                # 💡 [수술 패치] ticker_data_list에 실시간 추적 상태(tracking_info) 추가
+                tracking_status = tracking_cache.get(t, {})
+
                 ticker_data_list.append({
                     'ticker': t, 'version': ver, 't_val': t_val, 'split': split, 'curr': curr, 'avg': actual_avg, 'qty': actual_qty,
                     'profit_amt': (curr - actual_avg) * actual_qty if actual_qty > 0 else 0, 
@@ -230,7 +236,8 @@ class TelegramController:
                     'secret_quarter_target': secret_quarter_target,
                     'day_high': day_high,
                     'day_low': day_low,
-                    'prev_close': safe_prev_close
+                    'prev_close': safe_prev_close,
+                    'tracking_info': tracking_status # 💡 추적 정보 탑재
                 })
                 total_buy_needed += sum(o['price']*o['qty'] for o in plan['orders'] if o['side']=='BUY')
 
@@ -462,7 +469,7 @@ class TelegramController:
             split = self.cfg.get_split_count(ticker)
             t_val, _ = self.cfg.get_absolute_t_val(ticker, actual_qty, actual_avg)
             
-            report += f"📊 <b>[ 현재 진행 상황 요약 ]</b>\n"
+            report += f"📊 <b>[ 현재 진행 상황 요 요약 ]</b>\n"
             report += f"▪️ 현재 T값 : {t_val:.4f} T ({int(split)}분할)\n"
             report += f"▪️ 보유 수량 : {actual_qty} 주 (평단 ${actual_avg:,.2f})\n"
             report += f"▪️ 총 매수액 : ${total_buy:,.2f}\n"

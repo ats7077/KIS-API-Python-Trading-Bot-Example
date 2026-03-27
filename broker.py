@@ -162,7 +162,7 @@ class KoreaInvestmentBroker:
     def get_account_balance(self):
         cash = 0.0
         holdings = {}
-        api_success = False # 💡 [V21.16 패치] API 통신 성공 여부 플래그
+        api_success = False 
         
         params = {"CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd, "WCRC_FRCR_DVSN_CD": "02", "NATN_CD": "840", "TR_MKET_CD": "00", "INQR_DVSN_CD": "00"}
         res = self._call_api("CTRP6504R", "/uapi/overseas-stock/v1/trading/inquire-present-balance", "GET", params=params)
@@ -200,12 +200,57 @@ class KoreaInvestmentBroker:
                     if qty > 0 and ticker not in holdings: 
                         holdings[ticker] = {'qty': qty, 'avg': avg}
         
-        # 💡 [V21.16 패치] 0주 보유 시 None 반환 버그 해결
-        # API 통신이 한 번이라도 성공했다면 빈 딕셔너리({})를 그대로 반환하여 0주 보유 상태(✨새출발)를 정상 보고합니다.
         if api_success:
             return cash, holdings
         else:
             return cash, None
+
+    # 💡 [승승장군 핵심 수술] 능동형 추적 스나이퍼를 위한 실시간 5분봉 추출 메서드 (거래량 하이브리드 탑재)
+    def get_current_5min_candle(self, ticker):
+        """
+        현재 시점 기준으로 진행 중인 가장 최근 5분 단위의 OHLC 캔들과 거래량 데이터를 반환합니다.
+        (MA20 휩소 필터링을 위해 period를 2d로 확장하고 Volume 합산 도출)
+        """
+        try:
+            # yfinance를 통해 2일치 1분봉 데이터를 가져옴 (MA20 계산용 충분한 데이터 확보)
+            stock = yf.Ticker(ticker)
+            df = stock.history(period="2d", interval="1m", prepost=True)
+            
+            if df.empty:
+                return None
+                
+            # 시간 기반 그룹핑을 위해 인덱스를 5분 단위로 Resample
+            # 당일 데이터의 마지막 시간(현재시간) 기준으로 가장 최근의 5분 그룹을 가져옴
+            resampled = df.resample('5min', label='left', closed='left').agg({
+                'Open': 'first',
+                'High': 'max',
+                'Low': 'min',
+                'Close': 'last',
+                'Volume': 'sum'
+            }).dropna()
+            
+            if resampled.empty:
+                return None
+                
+            # 💡 [승승장군 핵심 수술] 최근 20개(100분) 캔들의 평균 거래량 계산
+            resampled['Vol_MA20'] = resampled['Volume'].rolling(20).mean()
+            
+            last_candle = resampled.iloc[-1]
+            
+            # MA20 값이 NaN일 경우(장초반 데이터 부족) 현재 캔들 거래량을 그대로 반환하여 방어
+            vol_ma20 = float(last_candle['Vol_MA20']) if not pd.isna(last_candle['Vol_MA20']) else float(last_candle['Volume'])
+            
+            return {
+                'open': float(last_candle['Open']),
+                'high': float(last_candle['High']),
+                'low': float(last_candle['Low']),
+                'close': float(last_candle['Close']),
+                'volume': float(last_candle['Volume']),
+                'vol_ma20': vol_ma20
+            }
+        except Exception as e:
+            print(f"⚠️ [Broker] 실시간 5분봉 캔들 조회 실패 ({ticker}): {e}")
+            return None
 
     def get_current_price(self, ticker, is_market_closed=False):
         try:
@@ -661,3 +706,4 @@ class KoreaInvestmentBroker:
             print(f"❌ [한투 API] 고가/저가 우회 조회 실패: {e}")
             
         return 0.0, 0.0
+
