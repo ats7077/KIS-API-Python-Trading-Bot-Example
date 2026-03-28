@@ -24,7 +24,7 @@ class TelegramController:
         self.admin_id = self.cfg.get_chat_id()
         self.sync_locks = {} 
         self.tx_lock = tx_lock or asyncio.Lock()
-        self.panic_alerts = {} # 🔥 V21.7 패닉 알림 하루 1회 발송용 메모리 추가
+        # 🔥 V22.02 패닉 알림 변수 완전 제거 (사용 안함)
 
     def _is_admin(self, update: Update):
         if self.admin_id is None:
@@ -120,6 +120,7 @@ class TelegramController:
 
         for t in self.cfg.get_active_tickers():
             self.cfg.set_version(t, "V14")
+            
         await update.message.reply_text("✅ <b>모든 종목이 오리지널 V4(무매4) 모드로 복귀했습니다.</b>", parse_mode='HTML')
 
     async def cmd_sync(self, update, context):
@@ -155,49 +156,33 @@ class TelegramController:
                 actual_avg = float(h['avg']) if h['avg'] else 0.0
                 actual_qty = int(h['qty'])
                 
-                # 🔥 [V21.7 핵심 핫픽스] 어떤 상황(주말/휴장)이든 무조건 애프터마켓 최종 종가(prev_close)를 신뢰하도록 수술
                 safe_prev_close = prev_close if prev_close else 0.0
                 
                 idx_ticker = "SOXX" if t == "SOXL" else "QQQ"
                 weight = self.cfg.get_sniper_multiplier(t)
                 
+                # 💡 [V22.02 수술] 순수 진폭 상수 반환 (패닉 관련 속성 제거)
                 dynamic_pct = await asyncio.to_thread(self.broker.get_dynamic_sniper_target, idx_ticker, weight)
-                
-                is_panic = getattr(dynamic_pct, 'is_panic', False)
-                gap_pct = getattr(dynamic_pct, 'gap_pct', 0.0)
-                
                 if dynamic_pct is None:
-                    dynamic_pct = 9.0 if t == "SOXL" else 5.0
+                    dynamic_pct = 7.59 if t == "SOXL" else 6.18
                 
-                if is_panic:
-                    today_str = datetime.datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d')
-                    alert_key = f"{t}_{today_str}"
-                    if alert_key not in self.panic_alerts:
-                        alert_msg = f"🚨 <b>[긴급] {t} 패닉 갭 하락 감지! ({gap_pct}%)</b>\n폭락 방어막 가동! V17 스나이퍼가 정밀 가중치(10% Cap)를 적용하여 <b>-{dynamic_pct}%</b> 타점으로 자동 투입되었습니다!"
-                        await update.message.reply_text(alert_msg, parse_mode='HTML')
-                        self.panic_alerts[alert_key] = True
+                # 💡 [V22.02 수술] 장중 고점을 기준으로 방어선을 표출하기 위해 실시간 추적 캐시를 확인
+                tracking_status = tracking_cache.get(t, {})
+                current_day_high = tracking_status.get('day_high', day_high) # 캐시가 없으면 기본 day_high 사용
                 
-                # 🔥 이제 safe_prev_close는 무조건 애프터마켓 종가를 가리킵니다.
-                hybrid_target_price = safe_prev_close * (1 - (dynamic_pct / 100.0))
+                hybrid_target_price = current_day_high * (1 - (dynamic_pct / 100.0))
                 
-                if actual_avg > 0:
-                    is_sniper_active = (hybrid_target_price < actual_avg) and (hybrid_target_price < ma_5day)
-                    if hybrid_target_price >= actual_avg:
-                        trigger_reason = "🛑(평단 위 관망)"
-                    elif hybrid_target_price >= ma_5day:
-                        trigger_reason = "🛑(5일선 위 과열)"
-                    else:
-                        trigger_reason = f"🌪️패닉(-{dynamic_pct}%)" if is_panic else f"-{dynamic_pct}%"
-                else:
-                    is_sniper_active = True
-                    trigger_reason = f"🌪️패닉(-{dynamic_pct}%)" if is_panic else f"-{dynamic_pct}%"
+                # V22.02에 맞게 조건 단순화 (스나이퍼는 무조건 장전 대기 중)
+                is_sniper_active = True
+                trigger_reason = f"-{dynamic_pct}%"
                 
                 is_already_ordered = self.cfg.check_lock(t, "REG") or self.cfg.check_lock(t, "SNIPER")
                 
+                # 💡 [핵심 수술 완료] 타임 패러독스 방어 백신 투여! 단순 조회 시 무조건 is_simulation=True 강제 고정
                 plan = self.strategy.get_plan(
                     t, curr, actual_avg, actual_qty, safe_prev_close, ma_5day=ma_5day,
                     market_type="REG", available_cash=allocated_cash[t], force_turbo_off=force_turbo_off,
-                    is_simulation=is_already_ordered 
+                    is_simulation=True 
                 )
                 
                 split = self.cfg.get_split_count(t)
@@ -214,9 +199,6 @@ class TelegramController:
                     else:
                         is_first_half = t_val < (split / 2)
                         secret_quarter_target = plan.get('star_price', 0.0) if is_first_half else math.ceil(actual_avg * 1.0025 * 100) / 100.0
-
-                # 💡 [수술 패치] ticker_data_list에 실시간 추적 상태(tracking_info) 추가
-                tracking_status = tracking_cache.get(t, {})
 
                 ticker_data_list.append({
                     'ticker': t, 'version': ver, 't_val': t_val, 'split': split, 'curr': curr, 'avg': actual_avg, 'qty': actual_qty,

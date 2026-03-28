@@ -4,6 +4,7 @@
 # ==========================================================
 import os
 import math
+import json
 from PIL import Image, ImageDraw, ImageFont
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -17,10 +18,9 @@ class TelegramView:
         season_short = "🌞서머타임 ON" if "Summer" in season_icon else "❄️서머타임 OFF"
         sync_time = "08:30" if target_hour == 17 else "09:30"
 
-        # 💡 [승승장군 핵심 수술] 모바일 1줄 최적화 및 동적 버전 연동 완료
         return (
             f"🌌 <b>[ 인피니트 스노우볼 {latest_version} ]</b>\n" 
-            f"⚡ <b>다이내믹 추적 스나이퍼 & API 무결성</b> \n\n"
+            f"⚡ <b>시계열 에너지 스나이퍼 & 무결성 엔진</b> \n\n"
             f"🕒 <b>[ 운영 스케줄 ({season_short}) ]</b>\n"
             f"🔹 6시간 간격 : 🔑 API 토큰 자동 갱신\n"
             f"🔹 {sync_time} : 📝 잔고 동기화 & 자동 복리\n"
@@ -210,21 +210,40 @@ class TelegramView:
                 body_msg += f"⚙️ 🎯 {t_info['target']}% | ⭐ {t_info['star_pct']}% | 🏎️가속 {t_info['turbo_txt']}\n"
             
             hybrid_target = t_info.get('hybrid_target', 0.0)
-            sniper_pct = t_info.get('sniper_trigger', 9.0) 
-            trigger_reason = t_info.get('trigger_reason', '')
+            sniper_pct = t_info.get('sniper_trigger', 0.0) 
             secret_quarter_target = t_info.get('secret_quarter_target', 0.0)
             tracking_info = t_info.get('tracking_info', {}) 
             
             if v_mode == "V17":
-                if trigger_reason.startswith("🛑"):
-                    body_msg += f"📉 <b>{trigger_reason}</b>\n"
-                elif hybrid_target > 0:
-                    if tracking_info.get('is_tracking', False):
-                        lowest = tracking_info.get('lowest_price', hybrid_target)
-                        trigger_val = 1.5 if t == "SOXL" else 1.0
-                        body_msg += f"🎯 <b>타점 이탈! 바닥 추적 중 (최저: ${lowest:.2f} / 목표: +{trigger_val}%)</b>\n"
+                # 💡 [V22.02] 진공 압축 폼 & 시계열 스나이퍼 텍스트
+                if "가로채기" in proc_status:
+                    hit_price = tracking_info.get('hit_price', 0.0)
+                    lowest = tracking_info.get('lowest_price', 0.0)
+                    
+                    if hit_price == 0.0:
+                        cache_file = f"data/sniper_cache_{t}.json"
+                        if os.path.exists(cache_file):
+                            try:
+                                with open(cache_file, 'r') as f:
+                                    c_data = json.load(f)
+                                    hit_price = c_data.get('hit_price', 0.0)
+                                    lowest = c_data.get('lowest_price', 0.0)
+                            except: pass
+                    
+                    if hit_price > 0 and lowest > 0:
+                        bounce_pct = ((hit_price - lowest) / lowest) * 100
+                        body_msg += f"💥 <b>명중: ${hit_price:.2f} (${lowest:.2f} 대비 +{bounce_pct:.2f}%)</b>\n"
                     else:
-                        body_msg += f"📉 <b>스나이퍼 방어선(-{sniper_pct:.2f}%): ${hybrid_target:.2f} 이하 대기</b>\n"
+                        body_msg += f"💥 <b>스나이퍼: 명중 완료</b>\n"
+                        
+                elif tracking_info.get('is_tracking', False):
+                    # 장전선 이탈 후 장중 바닥 추적 중 (모바일 최적화 2줄)
+                    lowest = tracking_info.get('lowest_price', 0.0)
+                    trigger_val = 1.5 if t == "SOXL" else 1.0
+                    body_msg += f"🎯 <b>장전선 이탈! 장중 바닥 추적 중</b>\n  <b>(최저: ${lowest:.2f} / 목표반등: +{trigger_val}%)</b>\n"
+                elif hybrid_target > 0:
+                    # 고점 대비 방어선 대기 중
+                    body_msg += f"📉 <b>스나이퍼(방어선): ${hybrid_target:.2f} 장전 대기 중</b>\n"
                 else:
                     body_msg += f"📉 <b>스나이퍼: 장전 대기 중</b>\n"
                 
@@ -263,9 +282,8 @@ class TelegramView:
             else:
                 body_msg += f" 💤 주문 없음 (관망/예산소진)\n"
             
-            if v_mode != "V17" and hybrid_target > 0 and not trigger_reason.startswith("🛑"):
-                body_msg += f"\n🎯 <b>스나이퍼 방어선(-{sniper_pct:.2f}%): ${hybrid_target:.2f}</b>\n"
-                body_msg += f"(💡 참고용으로 한투 사용자는 매수감시 모드에서 스나이퍼를 작동하실 수 있습니다.)\n"
+            if v_mode != "V17" and hybrid_target > 0:
+                body_msg += f"\n🎯 <b>참고 방어선(-{sniper_pct:.2f}%): ${hybrid_target:.2f}</b>\n"
 
             body_msg += "\n"
 
