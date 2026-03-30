@@ -26,7 +26,7 @@ class ConfigManager:
             "HISTORY": "data/manual_history.json",  
             "SPLIT": "data/split_config.json",
             "TICKER": "data/active_tickers.json",
-            "TURBO": "data/turbo_mode.dat",
+            "UPWARD_SNIPER": "data/upward_sniper.dat", # 가속모드 삭제, 상방 스나이퍼 추가
             "SECRET_MODE": "data/secret_mode.dat",
             "PROFIT_CFG": "data/profit_config.json",
             "LOCKS": "data/trade_locks.json",
@@ -534,11 +534,12 @@ class ConfigManager:
         d[t] = float(v)
         self._save_json(self.FILES["SNIPER_MULTIPLIER_CFG"], d)
 
-    def get_turbo_mode(self):
-        return self._load_file(self.FILES["TURBO"]) == 'True'
+    # 💡 [핵심 수술] 가속모드 삭제 및 상방 스나이퍼 모드 함수 신설
+    def get_upward_sniper_mode(self):
+        return self._load_file(self.FILES["UPWARD_SNIPER"]) == 'True'
 
-    def set_turbo_mode(self, v):
-        self._save_file(self.FILES["TURBO"], str(v))
+    def set_upward_sniper_mode(self, v):
+        self._save_file(self.FILES["UPWARD_SNIPER"], str(v))
 
     def get_secret_mode(self):
         return self._load_file(self.FILES["SECRET_MODE"]) == 'True'
