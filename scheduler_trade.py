@@ -5,6 +5,9 @@
 # 2. V_VWAP 0주 새출발 실종 버그 패치 (평단가 15% 할증) 유지
 # 3. 🚨 [V_VWAP 데드존 전면 철거] 평단가(actual_avg) 초과 시 매수 동결 방어막 제거. 
 #    익절 목표가(star_price) 도달 전까지 전량 매수(불타기) 강제 집행.
+# 4. 🚨 [V-REV 데드존 구축] 목표가(target_price) 미만 시 매도 보류 및 잔량 누적(Carry-over) 적용
+# 5. 🚨 [V-REV 1층 스윕 피니셔 탑재] 장 마감 2분 전 1층 타점(1.006) 이상일 경우 1층 잔여 물량 전량 청산
+# 6. 🚨 [애프터마켓 3% 로터리 덫 신설] KST 05:05 (16:05 EST) 잔여 물량 전량 +3% 지정가(After-market) 전송
 # ==========================================================
 import os
 import logging
@@ -369,6 +372,9 @@ async def scheduled_vwap_init_and_cancel(context):
         await asyncio.wait_for(_do_init(), timeout=45.0)
     except Exception as e:
         logging.error(f"🚨 VWAP Fail-Safe 초기화 에러: {e}")
+# ==========================================================
+# [scheduler_trade.py] (2부 / 2부)
+# ==========================================================
 
 # ==========================================================
 # 3. ⏱️ 1분봉 정밀 타격 (VWAP 슬라이싱)
@@ -425,15 +431,33 @@ async def scheduled_vwap_trade(context):
                     if curr_p <= 0 or prev_c <= 0: continue
                     
                     # ==========================================================
-                    # 🌪️ [V-REV 잭팟 피니셔] 장 마감 1~2분 전(58~59분) 전량 익절 강제 밀어넣기
+                    # 🌪️ [V-REV 잭팟 & 1층 잔량 스윕 피니셔] 장 마감 1~2분 전(58~59분) 강제 청산
                     # ==========================================================
                     q_data = queue_ledger.get_queue(t)
                     total_q = sum(item.get("qty", 0) for item in q_data)
                     avg_price = (sum(item.get("qty", 0) * item.get("price", 0.0) for item in q_data) / total_q) if total_q > 0 else 0.0
                     jackpot_trigger = avg_price * 1.010
                     
-                    if now_est.minute >= 58 and total_q > 0 and curr_p >= jackpot_trigger:
-                        if not vwap_cache.get(f"REV_{t}_sweep_finished"):
+                    # 💡 [수술] 1층 물량 및 타점 산출
+                    dates_in_queue = sorted(list(set(item.get('date') for item in q_data if item.get('date'))), reverse=True)
+                    layer_1_qty = 0
+                    layer_1_trigger = round(prev_c * 1.006, 2)
+                    if dates_in_queue:
+                        lots_for_date = [item for item in q_data if item.get('date') == dates_in_queue[0]]
+                        layer_1_qty = sum(item.get('qty', 0) for item in lots_for_date)
+                    
+                    if now_est.minute >= 58 and not vwap_cache.get(f"REV_{t}_sweep_finished"):
+                        target_sweep_qty = 0
+                        sweep_type = ""
+                        
+                        if total_q > 0 and curr_p >= jackpot_trigger:
+                            target_sweep_qty = total_q
+                            sweep_type = "잭팟 전량"
+                        elif layer_1_qty > 0 and curr_p >= layer_1_trigger:
+                            target_sweep_qty = layer_1_qty
+                            sweep_type = "1층 잔여물량"
+                            
+                        if target_sweep_qty > 0:
                             vwap_cache[f"REV_{t}_sweep_finished"] = True
                             
                             await asyncio.to_thread(broker.cancel_all_orders_safe, t, "SELL")
@@ -442,13 +466,16 @@ async def scheduled_vwap_trade(context):
                             bid_price = await asyncio.to_thread(broker.get_bid_price, t)
                             exec_price = bid_price if bid_price > 0 else curr_p
                             
-                            res = broker.send_order(t, "SELL", total_q, exec_price, "LIMIT")
+                            res = broker.send_order(t, "SELL", target_sweep_qty, exec_price, "LIMIT")
                             odno = res.get('odno', '')
                             
                             if res.get('rt_cd') == '0' and odno:
-                                msg = f"🌪️ <b>[{t}] 잭팟 잔량 강제 청산 (Sweep Finisher) 발동!</b>\n"
-                                msg += f"▫️ 장 마감을 2분 앞두고 잭팟 커트라인({jackpot_trigger:.2f}) 돌파를 확인했습니다.\n"
-                                msg += f"▫️ 미체결 잔량 <b>{total_q}주</b>를 시장 매수호가(${exec_price:.2f})로 100% 폭격하여 사이클을 완벽하게 강제 종료합니다! 🏆"
+                                msg = f"🌪️ <b>[{t}] {sweep_type} 강제 청산 (Sweep Finisher) 발동!</b>\n"
+                                if sweep_type == "잭팟 전량":
+                                    msg += f"▫️ 장 마감을 2분 앞두고 잭팟 커트라인({jackpot_trigger:.2f}) 돌파를 확인했습니다.\n"
+                                else:
+                                    msg += f"▫️ 장 마감을 2분 앞두고 1층 앵커({layer_1_trigger:.2f}) 방어를 확인했습니다.\n"
+                                msg += f"▫️ 미체결 잔량 <b>{target_sweep_qty}주</b>를 시장 매수호가(${exec_price:.2f})로 전량 폭격하여 지층을 완벽하게 소각합니다! 🏆"
                                 await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
                                 
                                 ccld_qty = 0
@@ -458,12 +485,14 @@ async def scheduled_vwap_trade(context):
                                     my_execs = [ex for ex in execs if ex.get('odno') == odno]
                                     if my_execs:
                                         ccld_qty = sum(int(float(ex.get('ft_ccld_qty') or 0)) for ex in my_execs)
-                                        if ccld_qty >= total_q: break
+                                        if ccld_qty >= target_sweep_qty: break
                                         
                                 if ccld_qty > 0:
                                     strategy_rev.record_execution(t, "SELL", ccld_qty, exec_price)
                                     queue_ledger.pop_lots(t, ccld_qty)
-                        continue 
+                        
+                        if target_sweep_qty > 0 or (total_q > 0 and curr_p >= jackpot_trigger):
+                            continue 
                     # ==========================================================
                     
                     try:
@@ -530,7 +559,7 @@ async def scheduled_vwap_trade(context):
                         if exec_price <= 0: exec_price = curr_p
                         
                         if side == "BUY" and exec_price > target_price: continue
-                        if side == "SELL" and exec_price <= prev_c: continue
+                        if side == "SELL" and exec_price < target_price: continue
                         
                         res = broker.send_order(t, side, slice_qty, exec_price, "LIMIT")
                         odno = res.get('odno', '')
@@ -574,7 +603,6 @@ async def scheduled_vwap_trade(context):
                     h = holdings.get(t, {'qty': 0, 'avg': 0})
                     actual_qty = int(float(h.get('qty') or 0))
                     
-                    # 💡 [긴급 수술] 0주(새출발)일 경우 평단가($0.00) 방어벽을 해제하기 위해 강제로 전일종가의 15% 할증 적용
                     prev_c_for_fix = await asyncio.to_thread(broker.get_previous_close, t)
                     actual_avg = (prev_c_for_fix * 1.15) if actual_qty == 0 else float(h.get('avg') or 0.0)
                     
@@ -660,13 +688,12 @@ async def scheduled_vwap_trade(context):
                     rem_star_budget = max(0.0, target_star_buy_budget - vwap_cache.get(f"{t}_star_buy_executed", 0.0))
                     rem_avg_budget = max(0.0, target_avg_buy_budget - vwap_cache.get(f"{t}_avg_buy_executed", 0.0))
                     
-                    # 💡 [데드존 철거 수술] actual_avg(평단가) 상한선을 star_price(목표가)로 확장
                     buy_qty = 0
                     if curr_p <= star_price and rem_star_budget > 0:
                         p1 = vwap_strategy.get_vwap_plan(t, curr_p, rem_star_budget, side="BUY", vwap_status=vwap_status)
                         if p1['orders']: buy_qty += p1['orders'][0]['qty']
                         
-                    if curr_p <= star_price and rem_avg_budget > 0: # 🚨 actual_avg -> star_price 로 상한선 해제
+                    if curr_p <= star_price and rem_avg_budget > 0: 
                         p2 = vwap_strategy.get_vwap_plan(t, curr_p, rem_avg_budget, side="BUY", vwap_status=vwap_status)
                         if p2['orders']: buy_qty += p2['orders'][0]['qty']
                         
@@ -679,7 +706,7 @@ async def scheduled_vwap_trade(context):
                             p1 = vwap_strategy.get_vwap_plan(t, exec_price, rem_star_budget, side="BUY", vwap_status=vwap_status)
                             if p1['orders']: valid_buy_qty += p1['orders'][0]['qty']
                             
-                        if exec_price <= star_price and rem_avg_budget > 0: # 🚨 actual_avg -> star_price 로 상한선 해제
+                        if exec_price <= star_price and rem_avg_budget > 0: 
                             p2 = vwap_strategy.get_vwap_plan(t, exec_price, rem_avg_budget, side="BUY", vwap_status=vwap_status)
                             if p2['orders']: valid_buy_qty += p2['orders'][0]['qty']
                             
@@ -711,7 +738,7 @@ async def scheduled_vwap_trade(context):
                                 if ccld_qty > 0:
                                     spent = ccld_qty * exec_price
                                     s_active = rem_star_budget if exec_price <= star_price else 0.0
-                                    a_active = rem_avg_budget if exec_price <= star_price else 0.0 # 🚨 actual_avg -> star_price
+                                    a_active = rem_avg_budget if exec_price <= star_price else 0.0 
                                     tot_act = s_active + a_active
                                     if tot_act > 0:
                                         vwap_cache[f"{t}_star_buy_executed"] = vwap_cache.get(f"{t}_star_buy_executed", 0.0) + spent * (s_active / tot_act)
@@ -762,9 +789,6 @@ async def scheduled_vwap_trade(context):
         await asyncio.wait_for(_do_vwap(), timeout=45.0)
     except Exception as e:
         logging.error(f"🚨 VWAP 스케줄러 에러: {e}")
-# ==========================================================
-# [scheduler_trade.py] (2부 / 2부)
-# ==========================================================
 
 # ==========================================================
 # 4. 🩸 긴급 수혈 스케줄러 (MOC)
@@ -975,3 +999,45 @@ async def scheduled_regular_trade(context):
             await asyncio.sleep(RETRY_DELAY)
 
     await context.bot.send_message(chat_id=chat_id, text="🚨 <b>[긴급 에러] 통신 복구 최종 실패. 수동 점검 요망!</b>", parse_mode='HTML')
+
+# ==========================================================
+# 6. 🌙 애프터마켓 로터리 덫 (16:05 EST / 05:05 KST)
+# ==========================================================
+async def scheduled_after_market_lottery(context):
+    app_data = context.job.data
+    cfg, broker, tx_lock = app_data['cfg'], app_data['broker'], app_data['tx_lock']
+    chat_id = context.job.chat_id
+
+    async def _do_lottery():
+        async with tx_lock:
+            cash, holdings = broker.get_account_balance()
+            if holdings is None: return
+
+            for t in cfg.get_active_tickers():
+                if cfg.get_version(t) != "V_REV":
+                    continue
+
+                h = holdings.get(t, {'qty': 0, 'avg': 0})
+                qty = int(float(h.get('qty') or 0))
+                avg_price = float(h.get('avg') or 0.0)
+
+                if qty > 0 and avg_price > 0:
+                    target_price = math.ceil(avg_price * 1.030 * 100) / 100.0
+
+                    await asyncio.to_thread(broker.cancel_all_orders_safe, t, "SELL")
+                    await asyncio.sleep(0.5)
+
+                    res = broker.send_order(t, "SELL", qty, target_price, "AFTER_LIMIT")
+                    
+                    if res.get('rt_cd') == '0':
+                        msg = f"🌙 <b>[{t}] 애프터마켓 3% 로터리 덫(Lottery Trap) 장전 완료</b>\n"
+                        msg += f"▫️ 대상 물량: <b>{qty}주</b> 전량\n"
+                        msg += f"▫️ 타겟 가격: <b>${target_price:.2f}</b> (총 평단가 +3%)\n"
+                        msg += f"▫️ 정규장 마감 후 유휴 주식을 활용하여 시간 외 폭등을 포획합니다. 미체결 시 내일 아침 자동 소멸됩니다! 🎣"
+                        await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML', disable_notification=True)
+                    await asyncio.sleep(0.2)
+
+    try:
+        await asyncio.wait_for(_do_lottery(), timeout=60.0)
+    except Exception as e:
+        logging.error(f"🚨 애프터마켓 로터리 덫 에러: {e}")
