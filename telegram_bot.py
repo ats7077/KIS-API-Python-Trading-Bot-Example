@@ -5,6 +5,7 @@
 # 2. 0주 도달 시 마이너스 수익이라도 장부를 비우는(강제 손절 리셋) 로직 개방
 # 💡 [V24.15 대수술] vwap_strategy 의존성 100% 적출 및 2대 코어 최적화
 # 💡 [V24.16 팩트 동기화] /sync 지시서 V-REV 0주 및 1층 가이던스 타점 코어 엔진 동기화 완료
+# 💡 [V24.16 팩트 동기화] 누락된 핸들러 및 콜백 라우터 100% 무손실 복원 완료
 # 💡 [V24.18 수술] 수동 긴급 수혈(Emergency MOC) 3중 경고 및 장외시간 원천 차단 엔진 신설
 # ==========================================================
 import logging
@@ -689,12 +690,13 @@ class TelegramController:
         if query: await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
         elif message_obj: await message_obj.edit_text(msg, reply_markup=markup, parse_mode='HTML')
         else: await context.bot.send_message(chat_id, msg, reply_markup=markup, parse_mode='HTML')
+
 # ==========================================================
 # [telegram_bot.py] - Part 2/2 부 (하반부)
 # ⚠️ 수술 내역: 
 # 1. 누락되었던 7개 명령어 핸들러(cmd_history ~ cmd_version) 100% 무손실 복원
 # 2. 인라인 버튼 중앙 통제 라우터(handle_callback) 및 텍스트 핸들러 완벽 복원
-# 💡 [V24.18 수술] 수동 긴급 수혈(EMERGENCY_REQ, EMERGENCY_EXEC) 3중 경고 및 MOC 격발 엔진 신설
+# 💡 [V24.18 수술] 수동 긴급 수혈(EMERGENCY_REQ, EMERGENCY_EXEC) 장외시간 사전 차단 및 MOC 격발 엔진 신설
 # ==========================================================
 
     async def cmd_history(self, update, context):
@@ -853,9 +855,16 @@ class TelegramController:
                 msg, markup = self.view.get_queue_management_menu(ticker, q_data)
                 await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
 
-        # 💡 [V24.18 수술] 수동 긴급 수혈 3중 경고 UI 진입 (Phase 1)
+        # 💡 [V24.18 수술] 수동 긴급 수혈 3중 경고 UI 진입 (Phase 1) 및 장외시간 사전 차단
         elif action == "EMERGENCY_REQ":
             ticker = sub
+            
+            # 🚨 [엣지 케이스 방어] 장운영시간(프리장, 정규장) 외 진입 원천 차단
+            status_code, _ = self._get_market_status()
+            if status_code not in ["PRE", "REG"]:
+                await query.answer("❌ [격발 차단] 현재 장운영시간(정규장/프리장)이 아닙니다.", show_alert=True)
+                return
+                
             if not getattr(self, 'queue_ledger', None):
                 from queue_ledger import QueueLedger
                 self.queue_ledger = QueueLedger()
@@ -878,9 +887,9 @@ class TelegramController:
             ticker = sub
             status_code, _ = self._get_market_status()
             
-            # 🚨 [엣지 케이스 방어] 장운영시간(프리장, 정규장) 외 격발 원천 차단
+            # 🚨 [엣지 케이스 방어] 장운영시간(프리장, 정규장) 외 격발 원천 차단 (이중 확인)
             if status_code not in ["PRE", "REG"]:
-                await query.answer("❌ [격발 차단] 현재 장운영시간(프리장/정규장)이 아닙니다.", show_alert=True)
+                await query.answer("❌ [격발 차단] 현재 장운영시간(정규장/프리장)이 아닙니다.", show_alert=True)
                 return
                 
             if not getattr(self, 'queue_ledger', None):
@@ -1322,4 +1331,3 @@ class TelegramController:
         finally:
             if chat_id in self.user_states:
                 del self.user_states[chat_id]
-
