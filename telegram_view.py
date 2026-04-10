@@ -2,7 +2,7 @@
 # [telegram_view.py] - Part 1/2 부 (상반부)
 # ⚠️ V-REV 장부 강제 초기화 3중 경고 방어막 유지
 # 💡 [V24.15 대수술] 2대 코어(V14, V-REV) 체제 UI 최적화 및 V_VWAP 적출
-# 💡 [V24.17 수술] V-REV 큐 관리 메뉴 내 수동 긴급 수혈(Emergency MOC) 격발 버튼 신설
+# 💡 [V24.18 수술] V-REV 큐 관리 메뉴 내 수동 긴급 수혈 3중 경고 방어막 UI 탑재
 # ==========================================================
 import os
 import math
@@ -192,10 +192,28 @@ class TelegramView:
                 
                 keyboard.append([InlineKeyboardButton(btn_text, callback_data=callback_data)])
             
-            # 💡 [수술] 수동 긴급 수혈(Emergency MOC) 버튼 이식
-            keyboard.append([InlineKeyboardButton("🩸 수동 긴급 수혈 (최근 로트 강제매도)", callback_data=f"EMERGENCY_MOC:{ticker}")])
+            # 💡 [V24.18 수술] 팻핑거 방지용 확인 메뉴 진입 라우팅 (EMERGENCY_REQ)
+            keyboard.append([InlineKeyboardButton("🩸 수동 긴급 수혈 (최근 로트 강제매도)", callback_data=f"EMERGENCY_REQ:{ticker}")])
         
         keyboard.append([InlineKeyboardButton("🔙 대시보드로 돌아가기", callback_data=f"REC:SYNC:{ticker}")])
+        return msg, InlineKeyboardMarkup(keyboard)
+
+    def get_emergency_moc_confirm_menu(self, ticker, qty, price):
+        msg = (
+            f"🛑 <b>[ 초긴급: {ticker} 수동 긴급 수혈(MOC) 승인 ]</b>\n\n"
+            f"가장 최근에 물린(LIFO) 지층 물량을 <b>시장가(MOC)</b>로 강제 청산하여 즉각 현금을 확보합니다.\n\n"
+            f"▫️ <b>대상 물량:</b> {qty}주\n"
+            f"▫️ <b>대상 평단:</b> ${price:.2f}\n\n"
+            f"⚠️ <b>[ 3중 경고 ]</b>\n"
+            f"1️⃣ <b>장운영시간(정규장/프리장)</b>에만 정상 체결됩니다.\n"
+            f"2️⃣ 체결 즉시 장부에서 해당 로트가 영구 삭제됩니다.\n"
+            f"3️⃣ 손실이 발생하더라도 <b>시장가(MOC)</b>로 즉각 던집니다.\n\n"
+            f"🔥 <b>정말로 강제 청산을 격발하시겠습니까?</b>"
+        )
+        keyboard = [
+            [InlineKeyboardButton("💥 예, 장운영시간임을 확인했으며 즉시 격발합니다", callback_data=f"EMERGENCY_EXEC:{ticker}")],
+            [InlineKeyboardButton("❌ 아니오, 수동 수혈을 취소합니다", callback_data=f"QUEUE:VIEW:{ticker}")]
+        ]
         return msg, InlineKeyboardMarkup(keyboard)
 
     def get_queue_action_confirm_menu(self, ticker, target_date, qty, price):
