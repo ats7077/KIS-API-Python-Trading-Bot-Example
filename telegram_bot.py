@@ -13,6 +13,7 @@
 # 🚨 [V25.13 디커플링 스왑 패치] 0주 보유 시 Buy1(/0.935)과 Buy2(*0.999)의 변수를 근본적으로 교환하여 고가->저가 순서 완벽 통일
 # 🚨 [V25.14 수동 분할 LOC 패치] 승승장군님 지시에 따른 KIS 서버자동주문용 1층 / 상위층 타점 완벽 디커플링 렌더링 개편
 # 🚨 [V25.20 엣지 케이스 패치] 0주 새출발 시 줍줍(Sweep) 렌더링 차단 및 옵션 A 하드코딩
+# 🚨 [V25.22 타점 동기화 패치] 수동 주문 라우터(EXEC)에 야후 파이낸스(YF) 전일 종가 고정 롤오버 엔진 이식 완료
 # ==========================================================
 import logging
 import datetime
@@ -418,7 +419,6 @@ class TelegramController:
                         if b2_qty > 0:
                             v_rev_guidance += f" 🔴 매수2(Buy2): ${b2_price:.2f} 진입 시 <b>{b2_qty}주</b>\n"
                             
-                        # MODIFIED: [V25.20 엣지 케이스] 0주 새출발 줍줍 렌더링 소각 및 옵션A 적용
                         if actual_qty == 0 or v_rev_q_qty == 0:
                             v_rev_guidance += " 🚫 <code>[0주 새출발] 기준 평단가 부재로 줍줍 생략 (1층 확보에 예산 100% 집중)</code>"
                         elif b2_qty > 0 and b2_price > 0:
@@ -852,6 +852,7 @@ class TelegramController:
 # 🚨 [V25.05 텍스트 라우터] 하단 고정 키보드 한글 신호 증발을 막기 위한 다이렉트 패스망 이식 완료
 # 🚨 [V25.14 분할 LOC 패치] 수동 EXEC 시 1층/상위층 완벽 분리 LOC 전송 렌더링 팩트 주입
 # 🚨 [V25.20 엣지 케이스 패치] 수동 EXEC 시 0주 새출발 줍줍(Sweep) 주문 격발 원천 차단 및 옵션A 텍스트 출력 이식
+# 🚨 [V25.22 타점 동기화 패치] 수동 주문 라우터(EXEC)에 야후 파이낸스(YF) 전일 종가 고정 롤오버 엔진 이식 완료
 # ==========================================================
 
     async def cmd_history(self, update, context):
@@ -1264,10 +1265,21 @@ class TelegramController:
                 safe_qty = int(float(h.get('qty') or 0))
 
                 status_code, _ = self._get_market_status()
-                if status_code in ["AFTER", "CLOSE", "PRE"] and curr_p > 0:
-                    prev_c = curr_p
+                
+                # MODIFIED: [V25.22 타점 동기화 패치] 수동 EXEC 시 장외시간 현재가(curr_p) 덮어쓰기 로직 폐기 및 YF 전일종가 고정 롤오버 엔진 이식
+                if status_code in ["AFTER", "CLOSE", "PRE"]:
+                    try:
+                        def get_yf_close():
+                            df = yf.Ticker(t).history(period="5d", interval="1d")
+                            return float(df['Close'].iloc[-1]) if not df.empty else None
+                        yf_close = await asyncio.wait_for(asyncio.to_thread(get_yf_close), timeout=3.0)
+                        if yf_close and yf_close > 0:
+                            prev_c = yf_close
+                    except Exception as e:
+                        logging.debug(f"YF 정규장 종가 롤오버 스캔 실패 ({t}): {e}")
+                        if curr_p > 0 and prev_c == 0.0:
+                            prev_c = curr_p
 
-                # MODIFIED: [V25.14 Decoupling] 승승장군님 지시에 따라 수동 장전(EXEC) 시 1층과 상위 악성 재고를 완벽히 분리하여 2개의 LOC 덫으로 장전
                 if ver == "V_REV":
                     if not getattr(self, 'queue_ledger', None):
                         from queue_ledger import QueueLedger
@@ -1308,7 +1320,6 @@ class TelegramController:
                         if b2_qty > 0:
                             loc_orders.append({'side': 'BUY', 'qty': b2_qty, 'price': b2_price, 'type': 'LOC', 'desc': '예방적 매수(Buy2)'})
                             
-                        # MODIFIED: [V25.20 엣지 케이스 패치] 0주 새출발 줍줍 주문 격발 원천 차단
                         if safe_qty == 0 or v_rev_q_qty == 0:
                             pass 
                         elif b2_qty > 0 and b2_price > 0:
@@ -1319,7 +1330,6 @@ class TelegramController:
 
                     msg = f"🛡️ <b>[{t}] V-REV 예방적 양방향 LOC 방어선 수동 장전 완료</b>\n"
                     
-                    # MODIFIED: [V25.20 엣지 케이스 패치] 0주 안내 문구 강제 출력
                     if safe_qty == 0 or v_rev_q_qty == 0:
                         msg += "🚫 <code>[0주 새출발] 기준 평단가 부재로 줍줍 생략 (1층 확보에 예산 100% 집중)</code>\n"
                         
