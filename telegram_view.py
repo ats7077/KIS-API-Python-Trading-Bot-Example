@@ -14,6 +14,8 @@
 # 🚀 [V26.01 뷰포트 수술] V_REV 2단계 모드 선택(자동 vs 수동 VWAP) 전용 렌더러 신설 완료
 # 🚀 [V26.02 UI 최적화] 수동 모드 타이틀 '(수동)' 치환 및 VWAP 타임 스케줄 렌더링 은폐 완벽 이식
 # 🚀 [V26.02 핵심 수술] V14 오리지널 집행 방식(LOC/VWAP) 선택용 2단계 렌더러 신설 및 지시서 동기화
+# 🚨 [V26.05 UI 렌더링 패치] 졸업 이미지 폰트(Microscopic Bitmap) 붕괴 방어용 로컬 및 범용 폰트 경로 대거 증설
+# 🚨 [V26.06 런타임 붕괴 방어] PIL 비트맵 폰트 강제 폴백 시 anchor 정렬 미지원에 따른 에러 우회 래퍼 이식
 # ==========================================================
 import os
 import math
@@ -23,14 +25,20 @@ from PIL import Image, ImageDraw, ImageFont
 class TelegramView:
     def __init__(self):
         self.bold_font_paths = [
+            "NanumGothicBold.ttf", "font_bold.ttf", "font.ttf",
             "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf", 
-            "C:/Windows/Fonts/malgunbd.ttf", 
-            "AppleGothic.ttf"
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "C:/Windows/Fonts/malgunbd.ttf", "C:/Windows/Fonts/arialbd.ttf",
+            "AppleGothic.ttf", "Arial.ttf"
         ]
         self.reg_font_paths = [
+            "NanumGothic.ttf", "font_reg.ttf", "font.ttf",
             "/usr/share/fonts/truetype/nanum/NanumGothic.ttf", 
-            "C:/Windows/Fonts/malgun.ttf", 
-            "AppleGothic.ttf"
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans.ttf",
+            "C:/Windows/Fonts/malgun.ttf", "C:/Windows/Fonts/arial.ttf",
+            "AppleGothic.ttf", "Arial.ttf"
         ]
 
     def _load_best_font(self, font_paths, size):
@@ -40,6 +48,21 @@ class TelegramView:
             except Exception:
                 continue
         return ImageFont.load_default()
+
+    # MODIFIED: [V26.06 런타임 붕괴 방어] 기본 비트맵 폰트 강제 폴백 시 anchor 속성 미지원으로 인한 PIL 붕괴 방어 래퍼
+    def _safe_draw_text(self, draw, xy, text, font, fill, anchor="mm"):
+        try:
+            draw.text(xy, str(text), font=font, fill=fill, anchor=anchor)
+        except Exception:
+            try:
+                if anchor == "mm":
+                    est_w = 6 * len(str(text))
+                    est_h = 10
+                    draw.text((xy[0] - est_w / 2, xy[1] - est_h / 2), str(text), font=font, fill=fill)
+                else:
+                    draw.text(xy, str(text), font=font, fill=fill)
+            except Exception:
+                pass
 
     def get_start_message(self, target_hour, season_icon, latest_version):
         dst_state = "🌞서머타임 ON" if target_hour == 17 else "❄️서머타임 OFF"
@@ -160,6 +183,9 @@ class TelegramView:
         return msg, InlineKeyboardMarkup(keyboard)
 # ==========================================================
 # [telegram_view.py] - Part 2/2 부 (하반부)
+# 🌟 100% 통합 완성본 🌟
+# 🚨 [V26.05 UI 렌더링 패치] 졸업 이미지 폰트(Microscopic Bitmap) 붕괴 방어용 로컬 및 범용 폰트 경로 대거 증설 연동
+# 🚨 [V26.06 런타임 붕괴 방어] _safe_draw_text 래퍼 함수 전면 적용을 통한 비트맵 폰트 중앙 정렬 붕괴 완벽 차단
 # ==========================================================
 
     def get_emergency_moc_confirm_menu(self, ticker, emergency_qty, emergency_price):
@@ -289,7 +315,6 @@ class TelegramView:
                 v_mode_display = "V_REV 역추세(수동)" if is_manual_vwap else "V_REV 역추세"
                 main_icon = "⚖️"
             else:
-                # MODIFIED: [V26.02] V14 VWAP 모드 텍스트 렌더링 동기화
                 v_mode_display = "무매4 (VWAP)" if is_manual_vwap else "무매4 (LOC)"
                 main_icon = "💎"
                 
@@ -393,7 +418,6 @@ class TelegramView:
                     keyboard.append([InlineKeyboardButton(f"🚀 {t} V-REV 방어선 수동 장전", callback_data=f"EXEC:{t}")])
                 
             else:
-                # MODIFIED: [V26.02] V14 VWAP 모드일 경우 가이던스 추가 렌더링
                 if is_manual_vwap and not is_rev:
                     body_msg += "⏱️ <b>VWAP 스케줄:</b> 장 마감 30분 전 ➔ 1분 단위 유동성 분할 타격\n"
                     
@@ -458,7 +482,6 @@ class TelegramView:
                 ver_display = "V_REV 역추세"
             else:
                 icon = "💎"
-                # MODIFIED: [V26.02] V14 타이틀 동적 변환
                 ver_display = "무매4 (VWAP)" if is_manual_vwap else "무매4 (LOC)"
                 
             split_cnt = int(config.get_split_count(t))
@@ -478,7 +501,6 @@ class TelegramView:
                 keyboard.append(row_init)
             else:
                 msg += f"▫️ 분할: {split_cnt}회\n▫️ 목표: {target_pct}%\n▫️ 자동복리: {comp_rate}%\n"
-                # NEW: [V26.02] V14 집행 방식 팩트 노출
                 v14_mode_txt = "VWAP 타임 슬라이싱 (유동성 추적)" if is_manual_vwap else "LOC 단일 타격 (초안정성)"
                 msg += f"▫️ 집행: <b>{v14_mode_txt}</b>\n\n"
                 
@@ -533,7 +555,6 @@ class TelegramView:
         ]
         return msg, InlineKeyboardMarkup(keyboard)
 
-    # NEW: [V26.02 핵심 수술] V14 오리지널 집행 방식(LOC/VWAP) 선택용 렌더러
     def get_v14_mode_selection_menu(self, ticker):
         msg = f"💎 <b>[{ticker} 무매4 오리지널 집행 방식 선택]</b>\n\n"
         msg += "오리지널 무한매수법(V14)의 당일 예산 집행 방식을 선택해 주십시오.\n\n"
@@ -648,28 +669,30 @@ class TelegramView:
 
         y_title = IMG_H + 60
         draw.rectangle([W/2 - 140, y_title - 45, W/2 + 140, y_title + 45], fill="#2A2F3D")
-        draw.text((W/2, y_title), f"{ticker}", font=f_title, fill="white", anchor="mm")
+        
+        # MODIFIED: [V26.06] _safe_draw_text 래퍼로 텍스트 드로잉 전면 치환 (비트맵 폰트 붕괴 차단)
+        self._safe_draw_text(draw, (W/2, y_title), f"{ticker}", font=f_title, fill="white", anchor="mm")
         
         color = "#007AFF" if profit < 0 else "#FF3B30"
         sign = "-" if profit < 0 else "+"
         
         y_profit = y_title + 105
-        draw.text((W/2, y_profit), f"{sign}${abs(profit):,.2f}", font=f_p, fill=color, anchor="mm")
+        self._safe_draw_text(draw, (W/2, y_profit), f"{sign}${abs(profit):,.2f}", font=f_p, fill=color, anchor="mm")
         
         y_yield = y_profit + 75
-        draw.text((W/2, y_yield), f"YIELD {sign}{abs(yield_pct):,.2f}%", font=f_y, fill=color, anchor="mm")
+        self._safe_draw_text(draw, (W/2, y_yield), f"YIELD {sign}{abs(yield_pct):,.2f}%", font=f_y, fill=color, anchor="mm")
         
         y_box = y_yield + 60
         
         draw.rectangle([40, y_box, 290, y_box + 100], fill="#2A2F3D")
-        draw.text((165, y_box + 35), f"${invested:,.2f}", font=f_b_val, fill="white", anchor="mm")
-        draw.text((165, y_box + 75), "TOTAL INVESTED", font=f_b_lbl, fill="#8E8E93", anchor="mm")
+        self._safe_draw_text(draw, (165, y_box + 35), f"${invested:,.2f}", font=f_b_val, fill="white", anchor="mm")
+        self._safe_draw_text(draw, (165, y_box + 75), "TOTAL INVESTED", font=f_b_lbl, fill="#8E8E93", anchor="mm")
         
         draw.rectangle([310, y_box, 560, y_box + 100], fill="#2A2F3D")
-        draw.text((435, y_box + 35), f"${revenue:,.2f}", font=f_b_val, fill="white", anchor="mm")
-        draw.text((435, y_box + 75), "TOTAL REVENUE", font=f_b_lbl, fill="#8E8E93", anchor="mm")
+        self._safe_draw_text(draw, (435, y_box + 35), f"${revenue:,.2f}", font=f_b_val, fill="white", anchor="mm")
+        self._safe_draw_text(draw, (435, y_box + 75), "TOTAL REVENUE", font=f_b_lbl, fill="#8E8E93", anchor="mm")
         
-        draw.text((W/2, H - 35), f"{end_date}", font=f_b_lbl, fill="#636366", anchor="mm")
+        self._safe_draw_text(draw, (W/2, H - 35), f"{end_date}", font=f_b_lbl, fill="#636366", anchor="mm")
         
         fname = f"data/profit_{ticker}.png"
         img.save(fname)
@@ -682,4 +705,3 @@ class TelegramView:
             [InlineKeyboardButton("💎 SOXL + TQQQ 통합", callback_data="TICKER:ALL")]
         ]
         return f"🔄 <b>[ 운용 종목 선택 ]</b>\n현재: <b>{', '.join(current_tickers)}</b>", InlineKeyboardMarkup(keyboard)
-

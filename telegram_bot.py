@@ -16,6 +16,7 @@
 # 🚨 [V25.22 타점 동기화 패치] 수동 주문 라우터(EXEC)에 야후 파이낸스(YF) 전일 종가 고정 롤오버 엔진 이식 완료
 # 🚀 [V26.01 모드 이원화] 수동 VWAP 시그널 모드(수수료 회피) 텍스트 렌더링 및 휴먼 에러 방어(30분 룰) 경고 탑재
 # 🚀 [V26.02 핵심 수술] V14 LOC/VWAP 2단계 모드 선택 분기 라우터 완벽 연동
+# 🚨 [NEW: FileNotFoundError 방어] 졸업카드 생성 전 background.png 절대경로 강제 복사 이식 완료
 # ==========================================================
 import logging
 import datetime
@@ -645,6 +646,10 @@ class TelegramController:
                         
                         if snapshot:
                             try:
+                                import shutil
+                                if not os.path.exists("background.png") and os.path.exists("/home/pipios4006/background.png"):
+                                    shutil.copy("/home/pipios4006/background.png", "background.png")
+                                    
                                 img_path = self.view.create_profit_image(
                                     ticker=ticker, 
                                     profit=snapshot['realized_pnl'], 
@@ -653,7 +658,7 @@ class TelegramController:
                                     revenue=snapshot['clear_price'] * snapshot['cleared_qty'], 
                                     end_date=snapshot['captured_at'].strftime('%Y-%m-%d')
                                 )
-                                if os.path.exists(img_path):
+                                if img_path and os.path.exists(img_path):
                                     with open(img_path, 'rb') as photo:
                                         await context.bot.send_photo(chat_id=chat_id, photo=photo)
                             except Exception as e:
@@ -696,11 +701,15 @@ class TelegramController:
                                     msg += f"\n💸 <b>자동 복리 +${added_seed:,.0f}</b> 이 다음 운용 시드에 완벽하게 추가되었습니다!"
                                 await context.bot.send_message(chat_id, msg, parse_mode='HTML')
                                 try:
+                                    import shutil
+                                    if not os.path.exists("background.png") and os.path.exists("/home/pipios4006/background.png"):
+                                        shutil.copy("/home/pipios4006/background.png", "background.png")
+                                        
                                     img_path = self.view.create_profit_image(
                                         ticker=ticker, profit=new_hist['profit'], yield_pct=new_hist['yield'],
                                         invested=new_hist['invested'], revenue=new_hist['revenue'], end_date=new_hist['end_date']
                                     )
-                                    if os.path.exists(img_path):
+                                    if img_path and os.path.exists(img_path):
                                         with open(img_path, 'rb') as photo:
                                             await context.bot.send_photo(chat_id=chat_id, photo=photo)
                                 except Exception as e:
@@ -775,7 +784,6 @@ class TelegramController:
 
                 self._sync_escrow_cash(ticker)
                 return "SUCCESS"
-
     async def _display_ledger(self, ticker, chat_id, context, query=None, message_obj=None, pre_fetched_holdings=None):
         recs = [r for r in self.cfg.get_ledger() if r['ticker'] == ticker]
         
@@ -850,6 +858,7 @@ class TelegramController:
             await message_obj.edit_text(msg, reply_markup=markup, parse_mode='HTML')
         else:
             await context.bot.send_message(chat_id, msg, reply_markup=markup, parse_mode='HTML')
+
 # ==========================================================
 # [telegram_bot.py] - Part 2/2 부 (하반부)
 # ⚠️ 수술 내역: 
@@ -868,6 +877,9 @@ class TelegramController:
 # 🚨 [V25.22 타점 동기화 패치] 수동 주문 라우터(EXEC)에 야후 파이낸스(YF) 전일 종가 고정 롤오버 엔진 이식 완료
 # 🚀 [V26.01 모드 이원화] 수동 VWAP 시그널 모드(수수료 회피) 텍스트 렌더링 및 휴먼 에러 방어(30분 룰) 경고 탑재
 # 🚀 [V26.02 핵심 수술] V14 LOC/VWAP 2단계 모드 선택 분기 라우터 완벽 연동
+# 🚨 [V26.06 런타임 붕괴 방어] 구버전 졸업 기록(trades 배열 누락) 호환성 패치 및 Safe Getter 이식
+# 🚨 [NEW: KeyError 방어] HIST:VIEW 시 V-REV 큐 데이터에 ticker/side 동적 주입을 통한 런타임 에러 완전 차단
+# 🚨 [NEW: FileNotFoundError 방어] HIST:IMG 시 절대 경로 배경 이미지 심볼릭/강제 복사 이식 완료
 # ==========================================================
 
     async def cmd_history(self, update, context):
@@ -1230,8 +1242,18 @@ class TelegramController:
                 hid = int(data[2])
                 target = next((h for h in self.cfg.get_history() if h['id'] == hid), None)
                 if target:
-                    qty, avg, invested, sold = self.cfg.calculate_holdings(target['ticker'], target['trades'])
-                    msg, markup = self.view.create_ledger_dashboard(target['ticker'], qty, avg, invested, sold, target['trades'], 0, 0, is_history=True)
+                    # NEW: [V26.06 런타임 붕괴 방어] 구버전 졸업 기록(trades 배열 누락) 호환성 패치
+                    safe_trades = target.get('trades', [])
+                    
+                    # 🚨 NEW: KeyError: 'ticker' 런타임 붕괴 방어막 (V-REV 큐 데이터 팩트 주입)
+                    for t_rec in safe_trades:
+                        if 'ticker' not in t_rec:
+                            t_rec['ticker'] = target['ticker']
+                        if 'side' not in t_rec:
+                            t_rec['side'] = 'BUY'
+                            
+                    qty, avg, invested, sold = self.cfg.calculate_holdings(target['ticker'], safe_trades)
+                    msg, markup = self.view.create_ledger_dashboard(target['ticker'], qty, avg, invested, sold, safe_trades, 0, 0, is_history=True)
                     await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
             elif sub == "LIST":
                 await self.cmd_history(update, context)
@@ -1246,6 +1268,11 @@ class TelegramController:
                 latest_hist = sorted(hist_list, key=lambda x: x.get('end_date', ''), reverse=True)[0]
                 
                 try:
+                    # 🚨 NEW: FileNotFoundError 런타임 붕괴 방어막 (절대 경로 이미지 심볼릭 복사)
+                    import shutil
+                    if not os.path.exists("background.png") and os.path.exists("/home/pipios4006/background.png"):
+                        shutil.copy("/home/pipios4006/background.png", "background.png")
+                        
                     img_path = self.view.create_profit_image(
                         ticker=latest_hist['ticker'],
                         profit=latest_hist['profit'],

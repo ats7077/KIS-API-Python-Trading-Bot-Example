@@ -13,6 +13,7 @@
 # 🚨 [V25.26 락다운 확장] 당일 0주 졸업 후 유령 매수(Phantom Buy) 방지를 위한 Daily Buy-Lock 완벽 이식
 # 🚀 [V26.02 핵심 수술] V14 무매 오리지널의 VWAP 슬라이싱 스케줄러 통합 확장
 # 🚨 [V26.03 핫픽스] V-REV 자동매매 시 줍줍(Grid) 누락 복원 및 수동 모드 스케줄러 100% 락다운 이식
+# 🚨 [V26.04 스위프 패치] VWAP 엔진 데드존(15:56~15:58) 철거 및 3분간(15:57~16:00)의 지속적 클린업 스윕 피니셔로 통합
 # ==========================================================
 import os
 import logging
@@ -187,6 +188,7 @@ async def scheduled_vwap_init_and_cancel(context):
 # ==========================================================
 # [scheduler_trade.py] - Part 2/2 부 (하반부)
 # 🌟 100% 통합 완성본 🌟
+# 🚨 [V26.04 스위프 패치] VWAP 엔진 데드존(15:56~15:58) 철거 및 3분간(15:57~16:00)의 지속적 클린업 스윕 피니셔로 통합
 # ==========================================================
 
 async def scheduled_vwap_trade(context):
@@ -204,7 +206,8 @@ async def scheduled_vwap_trade(context):
         market_close = now_est.replace(hour=16, minute=0, second=0, microsecond=0)
         
     vwap_start_time = market_close - datetime.timedelta(minutes=33)
-    vwap_end_time = market_close - datetime.timedelta(minutes=4)
+    # MODIFIED: [V26.04] 데드존 철거. 장 마감 순간(16:00)까지 엔진 가동을 허용하여 스위프 피니셔와 타임라인 완벽 병합
+    vwap_end_time = market_close 
     
     if not (vwap_start_time <= now_est <= vwap_end_time):
         return
@@ -226,7 +229,7 @@ async def scheduled_vwap_trade(context):
         0.0259, 0.0284, 0.0331, 0.0385, 0.0400, 0.0461, 0.0553, 0.0620, 0.0750, 0.1180
     ]
     
-    minutes_to_close = int(max(1, (market_close - now_est).total_seconds()) / 60)
+    minutes_to_close = int(max(0, (market_close - now_est).total_seconds()) / 60)
     min_idx = 33 - minutes_to_close
     if min_idx < 0: min_idx = 0
     if min_idx > 29: min_idx = 29
@@ -241,13 +244,10 @@ async def scheduled_vwap_trade(context):
                 version = cfg.get_version(t)
                 is_manual_vwap = getattr(cfg, 'get_manual_vwap_mode', lambda x: False)(t)
                 
-                # MODIFIED: [V26.03 핫픽스] V-REV 수동 모드일 경우 VWAP 타임 슬라이싱 자동 타격 락다운 (시그널 참모 유지)
                 if version == "V_REV" and is_manual_vwap:
                     continue
 
-                # 🚀 [V26.02 핵심 수술] V_REV(Auto) 또는 V14(VWAP) 모드일 경우 엔진 가동
                 if version == "V_REV" or (version == "V14" and is_manual_vwap):
-                    
                     if not vwap_cache.get(f"REV_{t}_nuked"):
                         try:
                             await asyncio.to_thread(broker.cancel_all_orders_safe, t, "BUY")
@@ -262,14 +262,11 @@ async def scheduled_vwap_trade(context):
                             logging.error(f"🚨 자가 치유 Nuke 실패: {e}")
                             continue
 
-                    if vwap_cache.get(f"REV_{t}_sweep_finished"):
-                        continue
-                            
+                    # MODIFIED: [V26.04] sweep_finished 블로킹 로직 원천 적출 (지속 덤핑 허용)
                     curr_p = float(await asyncio.to_thread(broker.get_current_price, t) or 0.0)
                     prev_c = float(await asyncio.to_thread(broker.get_previous_close, t) or 0.0)
                     if curr_p <= 0 or prev_c <= 0: continue
 
-                    # 💠 [분기 1] V_REV 역추세 하이브리드 엔진
                     if version == "V_REV":
                         strategy_rev = app_data.get('strategy_rev')
                         queue_ledger = app_data.get('queue_ledger')
@@ -279,7 +276,6 @@ async def scheduled_vwap_trade(context):
                         total_q = sum(item.get("qty", 0) for item in q_data)
                         
                         if vwap_cache.get(f"REV_{t}_was_holding", False) and total_q == 0:
-                            vwap_cache[f"REV_{t}_sweep_finished"] = True
                             continue
                             
                         if total_q > 0:
@@ -298,7 +294,8 @@ async def scheduled_vwap_trade(context):
                                 layer_1_price = sum(item.get('qty', 0) * item.get('price', 0.0) for item in lots_for_date) / layer_1_qty
                                 layer_1_trigger = round(layer_1_price * 1.006, 2)
                         
-                        if minutes_to_close <= 2 and not vwap_cache.get(f"REV_{t}_sweep_finished"):
+                        # MODIFIED: [V26.04] 장 마감 3분 전(15:57~16:00) 3분 가속 스위프(Sweep) 지속 격발 구역
+                        if minutes_to_close <= 3:
                             target_sweep_qty = 0
                             sweep_type = ""
                             
@@ -310,50 +307,52 @@ async def scheduled_vwap_trade(context):
                                 sweep_type = "1층 잔여물량"
                                 
                             if target_sweep_qty > 0:
-                                vwap_cache[f"REV_{t}_sweep_finished"] = True
-                                
                                 await asyncio.to_thread(broker.cancel_all_orders_safe, t, "SELL")
                                 await asyncio.sleep(0.5)
                                 
                                 _, live_holdings = await asyncio.to_thread(broker.get_account_balance)
                                 if live_holdings and t in live_holdings:
                                     sellable_qty = int(float(live_holdings[t].get('ord_psbl_qty', live_holdings[t].get('qty', 0))))
-                                    if sellable_qty < target_sweep_qty:
-                                        target_sweep_qty = sellable_qty
-                                        sweep_type += " (MOC 잠금분 디커플링 차감)"
-                                
-                                if target_sweep_qty > 0:
-                                    bid_price = float(await asyncio.to_thread(broker.get_bid_price, t) or 0.0)
-                                    exec_price = bid_price if bid_price > 0 else curr_p
+                                    actual_sweep_qty = min(target_sweep_qty, sellable_qty)
                                     
-                                    res = broker.send_order(t, "SELL", target_sweep_qty, exec_price, "LIMIT")
-                                    odno = res.get('odno', '')
-                                    
-                                    if res.get('rt_cd') == '0' and odno:
-                                        msg = f"🌪️ <b>[{t}] V-REV 본대 {sweep_type} 강제 청산 (Sweep Finisher) 발동!</b>\n"
-                                        if "잭팟" in sweep_type:
-                                            msg += f"▫️ 장 마감을 2분 앞두고 잭팟 커트라인({jackpot_trigger:.2f}) 돌파를 확인했습니다.\n"
-                                        else:
-                                            msg += f"▫️ 장 마감을 2분 앞두고 1층 앵커({layer_1_trigger:.2f}) 방어를 확인했습니다.\n"
-                                        msg += f"▫️ 매도 가능 잔량 <b>{target_sweep_qty}주</b>를 시장 매수호가(${exec_price:.2f})로 전량 폭격하여 지층을 소각합니다! 🏆"
-                                        await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
+                                    if actual_sweep_qty > 0:
+                                        bid_price = float(await asyncio.to_thread(broker.get_bid_price, t) or 0.0)
+                                        exec_price = bid_price if bid_price > 0 else curr_p
                                         
-                                        ccld_qty = 0
-                                        for _ in range(4):
-                                            await asyncio.sleep(2.0)
-                                            execs = await asyncio.to_thread(broker.get_execution_history, t, today_str, today_str)
-                                            my_execs = [ex for ex in execs if ex.get('odno') == odno]
-                                            if my_execs:
-                                                ccld_qty = sum(int(float(ex.get('ft_ccld_qty') or 0)) for ex in my_execs)
-                                                if ccld_qty >= target_sweep_qty: break
-                                                
-                                        if ccld_qty > 0:
-                                            strategy_rev.record_execution(t, "SELL", ccld_qty, exec_price)
-                                            queue_ledger.pop_lots(t, ccld_qty)
-                                else:
-                                    msg = f"⚠️ <b>[{t}] 스윕 피니셔 덤핑 생략 (MOC 락다운 감지)</b>\n▫️ 잭팟/1층 조건이 달성되었으나, 대상 물량이 수동 긴급 수혈(MOC) 등 취소 불가 상태로 미국 거래소에 묶여 있어 스윕 덤핑을 자동 스킵합니다."
-                                    await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
-                            
+                                        res = broker.send_order(t, "SELL", actual_sweep_qty, exec_price, "LIMIT")
+                                        odno = res.get('odno', '')
+                                        
+                                        if res.get('rt_cd') == '0' and odno:
+                                            # 메시지는 중복 방지를 위해 최초 1회만 타전
+                                            if not vwap_cache.get(f"REV_{t}_sweep_msg_sent"):
+                                                msg = f"🌪️ <b>[{t}] V-REV 본대 {sweep_type} 3분 가속 스윕(Sweep) 개시!</b>\n"
+                                                if "잭팟" in sweep_type:
+                                                    msg += f"▫️ 장 마감 3분 전 데드존 철거. 잭팟 커트라인({jackpot_trigger:.2f}) 돌파를 확인했습니다.\n"
+                                                else:
+                                                    msg += f"▫️ 장 마감 3분 전 데드존 철거. 1층 앵커({layer_1_trigger:.2f}) 방어를 확인했습니다.\n"
+                                                msg += f"▫️ 매도 가능 잔량이 0이 될 때까지 매 1분마다 지속 덤핑합니다! (현재 <b>{actual_sweep_qty}주</b> 매수호가 폭격) 🏆"
+                                                await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
+                                                vwap_cache[f"REV_{t}_sweep_msg_sent"] = True
+                                            
+                                            ccld_qty = 0
+                                            for _ in range(4):
+                                                await asyncio.sleep(2.0)
+                                                execs = await asyncio.to_thread(broker.get_execution_history, t, today_str, today_str)
+                                                my_execs = [ex for ex in execs if ex.get('odno') == odno]
+                                                if my_execs:
+                                                    ccld_qty = sum(int(float(ex.get('ft_ccld_qty') or 0)) for ex in my_execs)
+                                                    if ccld_qty >= actual_sweep_qty: break
+                                                    
+                                            if ccld_qty > 0:
+                                                strategy_rev.record_execution(t, "SELL", ccld_qty, exec_price)
+                                                queue_ledger.pop_lots(t, ccld_qty)
+                                    else:
+                                        if not vwap_cache.get(f"REV_{t}_sweep_skip_msg"):
+                                            msg = f"⚠️ <b>[{t}] 스윕 피니셔 덤핑 생략 (MOC 락다운 감지)</b>\n▫️ 조건이 달성되었으나, 대상 물량이 수동 긴급 수혈(MOC) 등 취소 불가 상태로 미국 거래소에 묶여 있어 스윕 덤핑을 자동 스킵합니다."
+                                            await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
+                                            vwap_cache[f"REV_{t}_sweep_skip_msg"] = True
+                                            
+                            # 💡 스위프 조건에 부합하면 해당 분(Minute)의 일반 VWAP 슬라이싱 로직은 건너뜀 (다음 분에 재스캔)
                             if target_sweep_qty > 0 or (total_q > 0 and curr_p >= jackpot_trigger):
                                 continue 
                         
@@ -410,7 +409,6 @@ async def scheduled_vwap_trade(context):
                             
                         target_orders = rev_plan.get('orders', [])
 
-                    # 💠 [분기 2] V14 무매4 오리지널 VWAP 엔진
                     elif version == "V14":
                         h = holdings.get(t, {'qty':0, 'avg':0})
                         actual_qty = int(h.get('qty', 0))
@@ -425,7 +423,6 @@ async def scheduled_vwap_trade(context):
                         )
                         target_orders = plan.get('orders', [])
 
-                    # 💥 [통합 발사 엔진] V_REV / V14_VWAP 공통 체결 프로세서
                     for o in target_orders:
                         slice_qty = o['qty']
                         if slice_qty <= 0: continue
@@ -527,7 +524,7 @@ async def scheduled_regular_trade(context):
             plans = {}
             msgs = {t: "" for t in sorted_tickers}
             all_success = {t: True for t in sorted_tickers}
-            v_rev_tickers = [] # 튜플 (ticker, version) 저장용
+            v_rev_tickers = [] 
 
             for t in sorted_tickers:
                 if cfg.check_lock(t, "REG"): continue
@@ -541,14 +538,12 @@ async def scheduled_regular_trade(context):
                 version = cfg.get_version(t)
                 is_manual_vwap = getattr(cfg, 'get_manual_vwap_mode', lambda x: False)(t)
 
-                # MODIFIED: [V26.03 핫픽스] V-REV 수동 모드일 경우 정규장 자동 전송 락다운 (시그널 참모 대기)
                 if version == "V_REV" and is_manual_vwap:
                     msgs[t] += f"🛡️ <b>[{t}] V-REV 수동 시그널 모드 가동 중</b>\n"
                     msgs[t] += "▫️ 봇 자동 주문이 락다운되었습니다. V앱에서 장 마감 30분 전 세팅으로 수동 장전하십시오.\n"
                     await context.bot.send_message(chat_id, msgs[t], parse_mode='HTML')
                     continue
 
-                # 🚀 [V26.02 핵심 수술] V_REV(Auto) 또는 V14(VWAP) 모드일 경우 예방적 LOC 덫 장전
                 if version == "V_REV" or (version == "V14" and is_manual_vwap):
                     loc_orders = []
                     
@@ -591,7 +586,6 @@ async def scheduled_regular_trade(context):
                             if b2_qty > 0:
                                 loc_orders.append({'side': 'BUY', 'qty': b2_qty, 'price': b2_price, 'type': 'LOC', 'desc': '예방적 매수(Buy2)'})
 
-                                # MODIFIED: [V26.03 핫픽스] V-REV 자동매매 시 줍줍(Grid) 누락 복원
                                 if safe_qty > 0 and v_rev_q_qty > 0:
                                     for n in range(1, 6):
                                         grid_p = round(half_portion_cash / (b2_qty + n), 2)
@@ -634,7 +628,6 @@ async def scheduled_regular_trade(context):
                     v_rev_tickers.append((t, version))
                     continue
                 
-                # 💠 V14 LOC 오리지널 모드 (기존 정규장 집행)
                 ma_5day = float(await asyncio.to_thread(broker.get_5day_ma, t) or 0.0)
                 plan = strategy.get_plan(t, curr_p, safe_avg, safe_qty, prev_c, ma_5day=ma_5day, market_type="REG", available_cash=allocated_cash.get(t, 0.0))
                 plans[t] = plan
@@ -731,7 +724,6 @@ async def scheduled_after_market_lottery(context):
                 if version != "V_REV":
                     continue
 
-                # MODIFIED: [V26.03 핫픽스] V-REV 수동 모드일 경우 애프터마켓 로터리 덫 자동 장전 락다운
                 is_manual_vwap = getattr(cfg, 'get_manual_vwap_mode', lambda x: False)(t)
                 if is_manual_vwap:
                     continue
