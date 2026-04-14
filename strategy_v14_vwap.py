@@ -6,18 +6,17 @@
 # 2. 17:05 프리장 오픈 시 '예방적 LOC 덫'을 Fail-Safe로 자동 장전
 # 3. 장 마감 30분 전(15:30 EST)부터 1분 단위 유동성 가중치 분할 타격
 # 🚨 [V26.02 팩트 동기화] 비파괴 보정(CALIB) 및 Safe Casting 완벽 이식
-# ==========================# NEW: [V26.02] V14 전용 VWAP 잔여 물량 추적기
+# 🚨 [V26.02 핫픽스] UI 렌더링 누락 버그(별%, 진행상태) 팩트 복원
+# ==========================================================
 import math
 import logging
 
 class V14VwapStrategy:
     def __init__(self, config):
         self.cfg = config
-        # NEW: 1분 단위 분할 시 소수점 잔차를 이월하여 정밀 타격 보장
         self.residual = {"BUY_AVG": {}, "BUY_STAR": {}, "SELL_STAR": {}, "SELL_TARGET": {}}
         self.executed = {"BUY_BUDGET": {}, "SELL_QTY": {}}
         
-        # 💡 [Vwap 연구.txt] 5년치 실데이터 기반 장마감 30분 유동성 가중치 (U-Curve)
         self.U_CURVE_WEIGHTS = [
             0.0252, 0.0213, 0.0192, 0.0210, 0.0189, 0.0187, 0.0228, 0.0203, 0.0200, 0.0209,
             0.0254, 0.0217, 0.0225, 0.0211, 0.0228, 0.0281, 0.0262, 0.0240, 0.0236, 0.0256,
@@ -28,13 +27,11 @@ class V14VwapStrategy:
     def _floor(self, val): return math.floor(val * 100) / 100.0
 
     def reset_residual(self, ticker):
-        """매일 초기화 시 호출하여 잔차 메모리 소각"""
         for k in self.residual: self.residual[k][ticker] = 0.0
         self.executed["BUY_BUDGET"][ticker] = 0.0
         self.executed["SELL_QTY"][ticker] = 0
 
     def record_execution(self, ticker, side, qty, exec_price):
-        """실제 체결된 내역을 메모리에 기록하여 다음 분분 예산 조정"""
         if side == "BUY":
             spent = qty * exec_price
             self.executed["BUY_BUDGET"][ticker] = self.executed["BUY_BUDGET"].get(ticker, 0.0) + spent
@@ -42,32 +39,27 @@ class V14VwapStrategy:
             self.executed["SELL_QTY"][ticker] = self.executed["SELL_QTY"].get(ticker, 0) + qty
 
     def get_plan(self, ticker, current_price, avg_price, qty, prev_close, ma_5day=0.0, market_type="REG", available_cash=0, is_simulation=False):
-        """
-        [17:05 Fail-Safe용 뼈대 생성]
-        V14 오리지널 로직을 활용하여 당일 전체 목표 수량 및 가격 산출
-        """
-        # 1. V14 퀀트 데이터 산출 (Portion, T-Val, Star-Price 등)
         split = self.cfg.get_split_count(ticker)
         target_ratio = self.cfg.get_target_profit(ticker) / 100.0
         t_val, _ = self.cfg.get_absolute_t_val(ticker, qty, avg_price)
         
-        # 2. 별% 가격 동적 감쇠 공식 적용
         depreciation_factor = 2.0 / split if split > 0 else 0.1
         star_ratio = target_ratio - (target_ratio * depreciation_factor * t_val)
         star_price = self._ceil(avg_price * (1 + star_ratio)) if avg_price > 0 else 0
         target_price = self._ceil(avg_price * (1 + target_ratio)) if avg_price > 0 else 0
         
-        # 3. 예산 산출 (동적 1회분)
         _, dynamic_budget, _ = self.cfg.calculate_v14_state(ticker)
         
-        # 4. 17:05 선제적 장전용 LOC 오더 생성 (VWAP 기상 전까지 계좌 보호)
         core_orders = []
+        # MODIFIED: [V26.02 핫픽스] 주문 진행 상태 텍스트 할당 로직 복원
+        process_status = "예방적방어선"
+        
         if qty == 0:
             p_buy = self._ceil(prev_close * 1.15)
             q_buy = math.floor(dynamic_budget / p_buy) if p_buy > 0 else 0
             if q_buy > 0: core_orders.append({"side": "BUY", "price": p_buy, "qty": q_buy, "type": "LOC", "desc": "🆕새출발(VWAP대기)"})
+            process_status = "✨새출발"
         else:
-            # 매수 분기 (평단/별값)
             p_avg = self._ceil(avg_price)
             if t_val < (split / 2):
                 q_avg = math.floor((dynamic_budget * 0.5) / p_avg) if p_avg > 0 else 0
@@ -78,25 +70,23 @@ class V14VwapStrategy:
                 q_star = math.floor(dynamic_budget / star_price) if star_price > 0 else 0
                 if q_star > 0: core_orders.append({"side": "BUY", "price": star_price, "qty": q_star, "type": "LOC", "desc": "💫별값매수(V)"})
             
-            # 매도 분기 (1/4 익절)
             q_sell = math.ceil(qty / 4)
             if q_sell > 0:
                 core_orders.append({"side": "SELL", "price": star_price, "qty": q_sell, "type": "LOC", "desc": "🌟별값매도(V)"})
                 if qty - q_sell > 0:
                     core_orders.append({"side": "SELL", "price": target_price, "qty": qty - q_sell, "type": "LIMIT", "desc": "🎯목표매도(V)"})
 
+        # MODIFIED: [V26.02 핫픽스] 텔레그램 뷰어가 요구하는 UI 변수(star_ratio, process_status, tracking_info) 100% 리턴
         return {
             'core_orders': core_orders, 'bonus_orders': [], 'orders': core_orders,
             't_val': t_val, 'one_portion': dynamic_budget, 'star_price': star_price,
-            'target_price': target_price, 'is_reverse': False
+            'star_ratio': star_ratio,
+            'target_price': target_price, 'is_reverse': False,
+            'process_status': process_status,
+            'tracking_info': {}
         }
 
     def get_dynamic_plan(self, ticker, curr_p, prev_c, current_weight, min_idx, alloc_cash, qty, avg_price):
-        """
-        [15:30 ~ 16:00 VWAP 타임 슬라이싱]
-        실시간 1분 단위 타격 지시서 생성
-        """
-        # 1. 기본 타점 및 수량 팩트 로드
         plan_static = self.get_plan(ticker, curr_p, avg_price, qty, prev_c, is_simulation=True)
         star_price = plan_static['star_price']
         target_price = plan_static['target_price']
@@ -107,15 +97,11 @@ class V14VwapStrategy:
         
         orders = []
         
-        # 2. 매수 슬라이싱 (V14 평단/별값 분리)
         total_spent = self.executed["BUY_BUDGET"].get(ticker, 0.0)
         rem_budget = max(0.0, total_budget - total_spent)
         
         if rem_budget > 0:
-            # 당일 할당 예산을 남은 시간 비중만큼 쪼갬
             slice_budget = rem_budget * slice_ratio
-            
-            # 고점 불타기 방지: 현재가가 별값(Star) 이하일 때만 매수 집행
             if star_price > 0 and curr_p <= star_price:
                 exact_qty = (slice_budget / curr_p) + self.residual["BUY_STAR"].get(ticker, 0.0)
                 alloc_qty = math.floor(exact_qty)
@@ -123,10 +109,8 @@ class V14VwapStrategy:
                 if alloc_qty > 0:
                     orders.append({"side": "BUY", "qty": alloc_qty, "price": star_price, "desc": "VWAP분할매수"})
 
-        # 3. 매도 슬라이싱 (1/4 쿼터 물량 대상)
         rem_sell_qty = math.ceil(qty / 4) - self.executed["SELL_QTY"].get(ticker, 0)
         if rem_sell_qty > 0 and star_price > 0:
-            # 주가가 별값 이상일 때만 슬라이싱 매도
             if curr_p >= star_price:
                 exact_s_qty = (rem_sell_qty * slice_ratio) + self.residual["SELL_STAR"].get(ticker, 0.0)
                 alloc_s_qty = min(math.floor(exact_s_qty), rem_sell_qty)
