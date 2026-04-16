@@ -200,5 +200,6 @@ VERSION_HISTORY = [
     "V27.07 [2026.04.19] 🚨 [AVWAP 4대 치명적 맹점 전면 철거 (✨코파일럿 AI 합작)]: 20일 이평선(20MA) 데이터 부족 시 발생하는 NaN 동결 붕괴, VWAP 연산 실패 침묵(Phantom Buy) 버그, 10시 정각 시간 문자열 누수 및 소수점 매수 주문 에러 완벽 해체 (수정: strategy_v_avwap)",
     "V27.08 [2026.04.20] 🚨 [V14 오리지널 엣지 케이스 완벽 수술 (✨코파일럿 AI 합작)]: 리버스 모드 예산 0원 산출 시 런타임 붕괴(ZeroDivision) 원천 차단, 자전거래 방어막의 참조 오염(In-place Mutation) 오류 교정 및 명시적 Int 캐스팅을 통한 소수점 API Reject 맹점 전면 수리 (수정: strategy_v14)",
     "V27.09 [2026.04.21] 🚨 [Broker 코어 6대 치명적 맹점 전면 철거 (✨코파일럿 AI 합작)]: 토큰 만료 타임존(UTC/KST) 붕괴 교정, 프리/애프터마켓 유령 캔들 오염 방어, 마이너스 예수금 폭주 차단, 0주/0달러 API Reject 방어 가드 이식 및 토큰 갱신 실패 시 무한 루프(Silent Loop) 원천 봉쇄 (수정: broker)",
-    "V27.10 [2026.04.22] 🚨 [Config 코어 그랜드 수술 (✨코파일럿 AI 합작)]: 에스크로 캐시 영구 박제(Ghost Escrow 방어), 액면분할 수학적 반올림(Banker's Rounding) 오류 교정 및 fsync 파일 무결성 확보 (수정: config)"
+    "V27.10 [2026.04.22] 🚨 [Config 코어 그랜드 수술 (✨코파일럿 AI 합작)]: 에스크로 캐시 영구 박제(Ghost Escrow 방어), 액면분할 수학적 반올림(Banker's Rounding) 오류 교정 및 fsync 파일 무결성 확보 (수정: config)",
+    "V27.11 [2026.04.23] 🚨 [Main 관제탑 6대 맹점 전면 철거 (✨코파일럿 AI 합작)]: asyncio.Lock 런타임 붕괴 방어, ADMIN_CHAT_ID 누락 침묵(Zombie) 차단, NaN 오판 및 역방향 폴백 차단, 콜드 스타트 폭풍 제어(first=30) 및 통합 타임존(America/New_York) 파이프라인 구축 (수정: main)"
 ]
