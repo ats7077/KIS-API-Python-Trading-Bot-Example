@@ -5,6 +5,7 @@
 # 🚨 [V27.02 핫픽스] 동일 일자(Same Day) 로트(Lot) 파편화 방지 및 자동 병합(Merge) 엔진 탑재
 # 🚨 [V27.02 핫픽스] CALIB_ADD (보정 추가) 시 평단가 $0.00 붕괴 버그 원천 차단
 # 🚨 [V27.14 그랜드 수술] 코파일럿 합작 - Atomic Write(장부 증발 방어), Thread Lock(동시접근 덮어쓰기 차단), 유령 로트(0주) 무한루프 소각, EST 타임존 병합 통일 및 백업 자가 치유(Self-Healing) 파이프라인 완벽 구축
+# 🚨 [V27.15 핫픽스] 초기화 Torn Write 방어, add_lot $0.00 주입 차단, pop_lots 미달 차감 감사 추적 및 sync_with_broker 런타임 붕괴 방어막 이식
 # ==========================================================
 import os
 import json
@@ -28,7 +29,10 @@ class QueueLedger:
         if dir_name and not os.path.exists(dir_name):
             os.makedirs(dir_name, exist_ok=True)
         if not os.path.exists(self.file_path):
-            self._save_unsafe({})
+            # MODIFIED: [초기화 동시성 붕괴(Torn Write) 방어] 스레드 락 획득 후 안전하게 장부 파일 생성 (Double-checked locking)
+            with self._lock:
+                if not os.path.exists(self.file_path):
+                    self._save_unsafe({})
 
     def _get_trading_date_str(self):
         # 🚨 [수술 완료] 로트 병합 기준을 KST가 아닌 EST(미국 동부 시간)로 통일
@@ -109,6 +113,12 @@ class QueueLedger:
         qty = int(float(qty or 0))
         if qty <= 0: return
         
+        # NEW: [add_lot 침묵하는 $0.00 로트 생성 방어] 가격 검증을 락 획득 이전에 수행하여 불량 데이터 유입 조기 차단
+        price_f = float(price or 0.0)
+        if price_f <= 0.0:
+            logging.error(f"🚨 [QueueLedger] add_lot 중단: {ticker} — 유효하지 않은 매수 가격 (price={price}). 로트 추가 취소.")
+            return
+            
         with self._lock:
             data = self._load_unsafe()
             q = data.get(ticker, [])
@@ -121,7 +131,8 @@ class QueueLedger:
                 old_price = float(q[-1].get("price", 0.0))
                 
                 new_qty = old_qty + qty
-                new_price = ((old_qty * old_price) + (qty * float(price))) / new_qty if new_qty > 0 else 0.0
+                # MODIFIED: 검증 완료된 price_f 적용
+                new_price = ((old_qty * old_price) + (qty * price_f)) / new_qty if new_qty > 0 else 0.0
                 
                 q[-1]["qty"] = new_qty
                 q[-1]["price"] = round(new_price, 4)
@@ -129,7 +140,7 @@ class QueueLedger:
             else:
                 q.append({
                     "qty": qty,
-                    "price": float(price or 0.0),
+                    "price": price_f, # MODIFIED: 검증 완료된 price_f 적용
                     "date": datetime.now(pytz.timezone('America/New_York')).strftime("%Y-%m-%d %H:%M:%S"),
                     "type": lot_type
                 })
@@ -138,7 +149,9 @@ class QueueLedger:
             self._save_unsafe(data)
 
     def pop_lots(self, ticker, target_qty):
-        target_qty = int(float(target_qty or 0))
+        # NEW: [pop_lots 미달 차감 감사 추적] 원본 요청 수량 보존 및 검증 변수 추가
+        original_target = int(float(target_qty or 0))
+        target_qty = original_target
         if target_qty <= 0: return 0
         
         with self._lock:
@@ -167,6 +180,10 @@ class QueueLedger:
                     popped_total += target_qty
                     target_qty = 0
 
+            # NEW: [pop_lots 미달 차감 경고 로직] 실제 차감량과 요청량 불일치 시 강력한 로그(Audit Trail) 배출
+            if popped_total < original_target:
+                logging.error(f"🚨 [QueueLedger] pop_lots 미달: {ticker} — 요청 {original_target}주 중 {popped_total}주만 차감. 브로커 매도 수량과 장부 불일치 가능성. 즉시 sync_with_broker 실행 권고.")
+
             data[ticker] = q
             self._save_unsafe(data)
             return popped_total
@@ -187,10 +204,19 @@ class QueueLedger:
 
             if current_q_qty < actual_qty:
                 diff = actual_qty - current_q_qty
-                calib_price = float(actual_avg)
+                
+                # MODIFIED: [float(None) 런타임 붕괴 방어] 결측치(None) 유입 시 TypeError 즉사 방어 (Safe Casting)
+                calib_price = float(actual_avg or 0.0)
                 
                 if calib_price <= 0.0:
                     calib_price = float(q[-1].get("price", 0.0)) if q else 0.0
+                
+                # NEW: [$0.00 평단가 유령 로트 주입 방어] 가격 확보 최종 실패 시 독극물(0달러 로트) 주입을 원천 차단
+                if calib_price <= 0.0:
+                    logging.error(f"🚨 [QueueLedger] sync_with_broker CALIB_ADD 중단: {ticker} — 실제 평단가 불명 (actual_avg={actual_avg}). $0 로트 주입 방지.")
+                    data[ticker] = q
+                    self._save_unsafe(data)
+                    return True
                 
                 if q and q[-1].get("date", "").startswith(today_str):
                     old_qty = int(float(q[-1].get("qty", 0)))

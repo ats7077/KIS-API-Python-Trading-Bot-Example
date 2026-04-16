@@ -7,6 +7,7 @@
 # 🚨 [V25.19 핫픽스] 자정(Midnight) 래핑(Wrap-around) 시간 오차 수학적 교정
 # 🚨 [V25.19 핫픽스] 리버스 확정 탈출 시 무조건 누적(increment)되던 데드코드 분리 차단
 # 🚨 [V27.12 그랜드 수술] 코파일럿 합작 - 리버스 하드스탑 부등호 논리 반전(수익 시 탈출) 완벽 교정 및 비활성 종목의 누적일 오염(State Corruption) 원천 차단
+# 🚨 [V27.13 그랜드 수술] 이벤트 루프 교착(Deadlock) 방어, TOCTOU 시차 불일치 해소, 미체결 잔여 주문(Orphan) 선제 취소, math.floor 가짜 수익(Phantom PnL) 교정 완료
 # ==========================================================
 import os
 import logging
@@ -108,7 +109,8 @@ def get_actual_execution_price(execs, target_qty, side_cd):
                 break
     
     if matched_qty > 0:
-        return math.floor((total_amt / matched_qty) * 100) / 100.0
+        # MODIFIED: [math.floor 평단가 왜곡 교정] 무조건 내림으로 인한 평단가 축소(Phantom PnL) 왜곡 방지를 위해 표준 반올림(round) 적용
+        return round(total_amt / matched_qty, 2)
     return 0.0
 
 def perform_self_cleaning():
@@ -181,32 +183,49 @@ async def scheduled_force_reset(context):
             if hasattr(cfg, 'set_order_locked'):
                 cfg.set_order_locked(t, False)
         
-        async with tx_lock:
-            _, holdings = broker.get_account_balance()
-            
-        if holdings is None:
-            holdings = {}
-            
         msg_addons = ""
+        
+        # NEW: [하드코딩된 임계치 방어] 종목별 하드스탑 명시적 매핑 딕셔너리 선언
+        HARD_STOP_THRESHOLDS = {
+            "TQQQ": -15.0,
+            "SOXL": -20.0
+        }
         
         for t in cfg.get_active_tickers():
             rev_state = cfg.get_reverse_state(t)
             
             # 🚨 [수술 완료] 리버스 모드가 켜진(Active) 종목만 탈출 검사 및 누적일 카운팅 수행 (상태 오염 방지)
             if rev_state.get("is_active"):
-                h_data = holdings.get(t) or {}
-                actual_avg = float(h_data.get('avg') or 0.0)
                 
-                curr_p = await asyncio.to_thread(broker.get_current_price, t)
+                # MODIFIED: [TOCTOU 시차 불일치 및 이벤트 루프 교착 방어] 잔고와 현재가를 동일 락 안에서 비동기로 동시 스냅샷 확보
+                async with tx_lock:
+                    _, holdings_snap = await asyncio.to_thread(broker.get_account_balance)
+                    curr_p = await asyncio.to_thread(broker.get_current_price, t)
+                
+                h_data = (holdings_snap or {}).get(t) or {}
+                actual_avg = float(h_data.get('avg') or 0.0)
                 curr_p = float(curr_p or 0.0)
                 
                 if curr_p > 0 and actual_avg > 0:
                     curr_ret = (curr_p - actual_avg) / actual_avg * 100.0
                     
-                    exit_threshold = -15.0 if t == "TQQQ" else -20.0
+                    # MODIFIED: [하드코딩 방어] 등록되지 않은 종목 유입 시 잘못된 청산 방지를 위해 Fail-loud 가동
+                    exit_threshold = HARD_STOP_THRESHOLDS.get(t)
+                    if exit_threshold is None:
+                        logging.error(f"🚨 [FATAL] {t}에 대한 하드스탑 임계치가 설정되지 않았습니다. 즉시 확인 바랍니다.")
+                        continue
                     
                     # 🚨 [수술 완료] 하드스탑 탈출 부등호 논리 반전 교정 (손실이 임계치보다 크거나 같을 때 탈출)
                     if curr_ret <= exit_threshold:
+                        
+                        # NEW: [미체결 잔여 주문 방치(Orphan Orders) 차단] 장부 초기화 전 증권사 서버의 미체결 주문 선제적 전량 취소
+                        try:
+                            cancelled = await asyncio.to_thread(broker.cancel_all_orders, t)
+                            logging.warning(f"🚨 [HardStop] {t} 미체결 주문 {cancelled}건 취소 완료")
+                        except Exception as cancel_err:
+                            logging.error(f"🚨 [HardStop] {t} 주문 취소 실패 — 수동 확인 필수: {cancel_err}")
+                            await context.bot.send_message(chat_id=chat_id, text=f"🚨 <b>[{t}] 하드스탑 주문 취소 실패!</b> 브로커에서 미체결 주문을 수동으로 확인하세요.", parse_mode='HTML')
+
                         cfg.set_reverse_state(t, False, 0, 0.0)
                         cfg.clear_escrow_cash(t)
                         
@@ -255,8 +274,9 @@ async def run_auto_sync(context, time_str):
             success_tickers.append(t)
             
     if success_tickers:
+        # MODIFIED: [이벤트 루프 교착 방어] 동기 API 호출을 비동기 래퍼로 위임하여 봇 마비 원천 차단
         async with context.job.data['tx_lock']:
-            _, holdings = context.job.data['broker'].get_account_balance()
+            _, holdings = await asyncio.to_thread(context.job.data['broker'].get_account_balance)
         await bot._display_ledger(success_tickers[0], chat_id, context, message_obj=status_msg, pre_fetched_holdings=holdings)
     else:
         await status_msg.edit_text(f"📝 <b>[{time_str}] 장부 동기화 완료</b> (표시할 진행 중인 장부가 없습니다)", parse_mode='HTML')
