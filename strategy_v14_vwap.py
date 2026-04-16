@@ -11,6 +11,7 @@
 # 🚀 [V27.01 지시서 스냅샷] 매일 17:05 확정 지시서를 박제하여 장중 잔고 변이에 따른 타점 왜곡 원천 차단
 # 🚨 [V27.03 핫픽스] 스냅샷 로드 시 내부 날짜 검사(Validation) 전면 폐기로 무한루프 영구 방어
 # 🚨 [V27.04 자전거래 방어] 별값매수 타점을 별값매도 대비 -$0.01 차감(Decoupling)하여 동시 타격 시 주문 거절 맹점 소각
+# 🚨 [V27.05 그랜드 수술] 기억상실, 자전거래 하극상, API Reject(소수점 주문), 인자 누락 등 5대 치명적 맹점 전면 철거
 # ==========================================================
 import math
 import logging
@@ -51,9 +52,11 @@ class V14VwapStrategy:
                 with open(state_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     for k in self.residual.keys():
-                        self.residual[k][ticker] = data.get("residual", {}).get(k, 0.0)
+                        self.residual[k][ticker] = float(data.get("residual", {}).get(k, 0.0))
                     for k in self.executed.keys():
-                        self.executed[k][ticker] = data.get("executed", {}).get(k, 0.0)
+                        # 🚨 [수술 완료] 수량(SELL_QTY)은 반드시 정수(int)로 로드하여 소수점 거절 에러 차단
+                        raw_val = data.get("executed", {}).get(k, 0)
+                        self.executed[k][ticker] = int(raw_val) if k == "SELL_QTY" else float(raw_val)
                     self.state_loaded[ticker] = today_str
                     return
             except Exception:
@@ -70,8 +73,11 @@ class V14VwapStrategy:
         state_file = self._get_state_file(ticker)
         data = {
             "date": today_str,
-            "residual": {k: self.residual[k].get(ticker, 0.0) for k in self.residual.keys()},
-            "executed": {k: self.executed[k].get(ticker, 0.0) for k in self.executed.keys()}
+            "residual": {k: float(self.residual[k].get(ticker, 0.0)) for k in self.residual.keys()},
+            "executed": {
+                "BUY_BUDGET": float(self.executed.get("BUY_BUDGET", {}).get(ticker, 0.0)),
+                "SELL_QTY": int(self.executed.get("SELL_QTY", {}).get(ticker, 0))
+            }
         }
         try:
             dir_name = os.path.dirname(state_file)
@@ -130,10 +136,10 @@ class V14VwapStrategy:
     def record_execution(self, ticker, side, qty, exec_price):
         self._load_state_if_needed(ticker)
         if side == "BUY":
-            spent = qty * exec_price
-            self.executed["BUY_BUDGET"][ticker] = self.executed["BUY_BUDGET"].get(ticker, 0.0) + spent
+            spent = float(qty * exec_price)
+            self.executed["BUY_BUDGET"][ticker] = float(self.executed["BUY_BUDGET"].get(ticker, 0.0)) + spent
         else:
-            self.executed["SELL_QTY"][ticker] = self.executed["SELL_QTY"].get(ticker, 0) + qty
+            self.executed["SELL_QTY"][ticker] = int(self.executed["SELL_QTY"].get(ticker, 0)) + int(qty)
         self._save_state(ticker)
 
     def get_plan(self, ticker, current_price, avg_price, qty, prev_close, ma_5day=0.0, market_type="REG", available_cash=0, is_simulation=False, is_snapshot_mode=False):
@@ -151,9 +157,9 @@ class V14VwapStrategy:
         star_price = self._ceil(avg_price * (1 + star_ratio)) if avg_price > 0 else 0
         target_price = self._ceil(avg_price * (1 + target_ratio)) if avg_price > 0 else 0
         
-        # NEW: [V27.04] 자전거래 방어용 매수 타점 1센트 디커플링 (안전 하한선 $0.01 보장)
-        buy_star_price = max(0.01, round(star_price - 0.01, 2)) if star_price > 0 else 0.0
-        
+        # 🚨 [수술 완료] 자전거래 방어 하극상(매수가 >= 매도가) 맹점 원천 차단
+        buy_star_price = round(star_price - 0.01, 2) if star_price > 0.01 else 0.0
+
         _, dynamic_budget, _ = self.cfg.calculate_v14_state(ticker)
         
         core_orders = []
@@ -191,8 +197,7 @@ class V14VwapStrategy:
             'tracking_info': {}
         }
         
-        # 🚨 [수술 완료] 조건문 철거! 
-        # 이 줄까지 코드가 도달했다면 캐시가 없거나 강제 갱신 모드이므로 무조건 박제합니다.
+        # 🚨 [수술 완료] 기억 상실 방어 - 이 단계에 도달하면 무조건 스냅샷 저장
         self.save_daily_snapshot(ticker, plan_result)
             
         return plan_result
@@ -200,38 +205,50 @@ class V14VwapStrategy:
     def get_dynamic_plan(self, ticker, curr_p, prev_c, current_weight, min_idx, alloc_cash, qty, avg_price):
         self._load_state_if_needed(ticker)
         
-        plan_static = self.get_plan(ticker, curr_p, avg_price, qty, prev_c, is_simulation=True, is_snapshot_mode=False)
-        star_price = plan_static['star_price']
+        # 🚨 [수술 완료] 누락된 매개변수 보강 및 명시적 키워드 매핑(Kwargs)으로 인자 꼬임 방어
+        plan_static = self.get_plan(
+            ticker=ticker,
+            current_price=curr_p,
+            avg_price=avg_price,
+            qty=qty,
+            prev_close=prev_c,
+            available_cash=alloc_cash,
+            is_simulation=True,
+            is_snapshot_mode=False
+        )
+        star_price = float(plan_static['star_price'])
         
-        # NEW: [V27.04] 자전거래 방어용 분리된 매수 타점 로드 (스냅샷 누락 대비 Fallback 적용)
-        buy_star_price = plan_static.get('buy_star_price', max(0.01, round(star_price - 0.01, 2)) if star_price > 0 else 0.0)
+        # 🚨 [수술 완료] 자전거래 방어용 분리된 매수 타점 스냅샷 누락 대비 하극상 로직 동일 적용
+        buy_star_price = float(plan_static.get('buy_star_price', round(star_price - 0.01, 2) if star_price > 0.01 else 0.0))
         
-        target_price = plan_static['target_price']
-        total_budget = plan_static['one_portion']
+        target_price = float(plan_static['target_price'])
+        total_budget = float(plan_static['one_portion'])
         
         rem_weight = sum(self.U_CURVE_WEIGHTS[min_idx:])
         slice_ratio = current_weight / rem_weight if rem_weight > 0 else 1.0
         
         orders = []
         
-        total_spent = self.executed["BUY_BUDGET"].get(ticker, 0.0)
+        total_spent = float(self.executed["BUY_BUDGET"].get(ticker, 0.0))
         rem_budget = max(0.0, total_budget - total_spent)
         
         if rem_budget > 0:
             slice_budget = rem_budget * slice_ratio
             if buy_star_price > 0 and curr_p <= buy_star_price:
-                exact_qty = (slice_budget / curr_p) + self.residual["BUY_STAR"].get(ticker, 0.0)
-                alloc_qty = math.floor(exact_qty)
-                self.residual["BUY_STAR"][ticker] = exact_qty - alloc_qty
+                # 🚨 [수술 완료] 잔차 연산 시 float/int 명시적 캐스팅으로 타입 붕괴 차단
+                exact_qty = (slice_budget / curr_p) + float(self.residual["BUY_STAR"].get(ticker, 0.0))
+                alloc_qty = int(math.floor(exact_qty))
+                self.residual["BUY_STAR"][ticker] = float(exact_qty - alloc_qty)
                 if alloc_qty > 0:
                     orders.append({"side": "BUY", "qty": alloc_qty, "price": buy_star_price, "desc": "VWAP분할매수"})
 
-        rem_sell_qty = math.ceil(qty / 4) - self.executed["SELL_QTY"].get(ticker, 0)
+        # 🚨 [수술 완료] int 강제 캐스팅으로 소수점 주식 찌꺼기 API Reject 에러 원천 차단
+        rem_sell_qty = int(math.ceil(qty / 4)) - int(self.executed["SELL_QTY"].get(ticker, 0))
         if rem_sell_qty > 0 and star_price > 0:
             if curr_p >= star_price:
-                exact_s_qty = (rem_sell_qty * slice_ratio) + self.residual["SELL_STAR"].get(ticker, 0.0)
-                alloc_s_qty = min(math.floor(exact_s_qty), rem_sell_qty)
-                self.residual["SELL_STAR"][ticker] = exact_s_qty - alloc_s_qty
+                exact_s_qty = float(rem_sell_qty * slice_ratio) + float(self.residual["SELL_STAR"].get(ticker, 0.0))
+                alloc_s_qty = int(min(math.floor(exact_s_qty), rem_sell_qty))
+                self.residual["SELL_STAR"][ticker] = float(exact_s_qty - alloc_s_qty)
                 if alloc_s_qty > 0:
                     orders.append({"side": "SELL", "qty": alloc_s_qty, "price": star_price, "desc": "VWAP분할익절"})
 
