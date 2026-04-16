@@ -1,13 +1,13 @@
 # ==========================================================
-# [broker.py] - Part 1/2 부 (상반부)
-# 🌟 100% 통합 완성본 🌟
+# [broker.py] - 🌟 100% 통합 완성본 🌟
 # ⚠️ 수술 내역: 야후 파이낸스(yfinance) 좀비 스레드 누적 방지
 # 모든 history() 호출에 timeout=5 파라미터 강제 주입 완료
 # 🚨 [V25.19 핫픽스] 토큰 만료 시간 타임존(Timezone) Naive/Aware 충돌 교정
-# 🚨 [V25.19 핫픽스] Windows 환경 임시 파일 권한(Permission) 락 충돌 방어 (shutil.move 도입)
-# 🚨 [V25.20 핫픽스] 잭팟 스윕 피니셔 디커플링 연산을 위한 ord_psbl_qty(순수 매도 가능 수량) 확장 이식
-# 🚨 [V25.23 디커플링] 범용 1분봉 스캔 엔진(get_1min_candles_df) 신설 탑재 (API 의존성 적출)
-# 🚨 [V25.25 핫픽스] 애프터마켓(AFTER_LIMIT) KIS 주문 코드 규격(00) 교정 (장마감 코드 34 충돌 방어)
+# 🚨 [V25.20 핫픽스] 잭팟 스윕 피니셔 디커플링 연산을 위한 ord_psbl_qty 확장 이식
+# 🚨 [V25.23 디커플링] 범용 1분봉 스캔 엔진(get_1min_candles_df) 신설 탑재
+# 🚨 [V25.25 핫픽스] 애프터마켓(AFTER_LIMIT) KIS 주문 코드 규격(00) 교정
+# 🚨 [V27.09 그랜드 수술] 코파일럿 합작 - 토큰 타임존 붕괴, 애프터마켓 캔들 오염, 
+# 마이너스 잔고 폭주, 0주/0달러 API Reject 맹점 등 6대 치명적 버그 전면 철거
 # ==========================================================
 
 import requests
@@ -38,13 +38,13 @@ class KoreaInvestmentBroker:
         self._get_access_token()
 
     def _get_access_token(self, force=False):
+        kst = pytz.timezone('Asia/Seoul')
+        
         if not force and os.path.exists(self.token_file):
             try:
                 with open(self.token_file, 'r') as f:
                     saved = json.load(f)
                 expire_time = datetime.datetime.strptime(saved['expire'], '%Y-%m-%d %H:%M:%S')
-                
-                kst = pytz.timezone('Asia/Seoul')
                 now_kst_naive = datetime.datetime.now(kst).replace(tzinfo=None)
                 
                 if expire_time > now_kst_naive + datetime.timedelta(hours=1):
@@ -64,7 +64,8 @@ class KoreaInvestmentBroker:
             data = res.json()
             if 'access_token' in data:
                 self.token = data['access_token']
-                expire_str = (datetime.datetime.now() + datetime.timedelta(seconds=int(data['expires_in']))).strftime('%Y-%m-%d %H:%M:%S')
+                # 🚨 [수술 완료] KST(한국시간) 기준으로 타임존 강제 락온 (클라우드 UTC 오동작 원천 차단)
+                expire_str = (datetime.datetime.now(kst).replace(tzinfo=None) + datetime.timedelta(seconds=int(data['expires_in']))).strftime('%Y-%m-%d %H:%M:%S')
                 
                 dir_name = os.path.dirname(self.token_file)
                 if dir_name and not os.path.exists(dir_name):
@@ -105,8 +106,15 @@ class KoreaInvestmentBroker:
                     msg1 = resp_json.get('msg1', '')
                     if any(x in msg1.lower() for x in ['토큰', '접근토큰', 'token', 'expired', 'mig', '인증', 'authorization']):
                         if attempt == 0: 
+                            old_token = self.token # 🚨 [수술 완료] 토큰 갱신 실패 감지용 백업
                             print(f"\n🚨 [안전장치 가동] API 토큰 만료 감지! : {msg1}")
                             self._get_access_token(force=True)
+                            
+                            # 🚨 [수술 완료] 토큰 갱신 자체가 실패했다면 무한 루프(Silent Loop) 차단
+                            if self.token == old_token or self.token is None:
+                                print("🚨 [Broker] 토큰 갱신 실패. 재시도 중단.")
+                                return res, resp_json
+                                
                             headers["authorization"] = f"Bearer {self.token}"
                             time.sleep(1.0)
                             continue
@@ -191,7 +199,8 @@ class KoreaInvestmentBroker:
             buy_amt = self._safe_float(o2.get('frcr_buy_amt_smtl', 0))      
             
             raw_bp = dncl_amt + sll_amt - buy_amt
-            cash = math.floor((raw_bp * 0.9945) * 100) / 100.0              
+            # 🚨 [수술 완료] 마이너스 계좌 잔고로 인한 수량 음수(Negative) 연쇄 붕괴 원천 차단
+            cash = max(0.0, math.floor((raw_bp * 0.9945) * 100) / 100.0)
 
         target_excgs = ["NASD", "AMEX", "NYSE"] 
         
@@ -215,28 +224,23 @@ class KoreaInvestmentBroker:
                     if qty > 0 and ticker not in holdings: 
                         holdings[ticker] = {'qty': qty, 'ord_psbl_qty': ord_psbl_qty, 'avg': avg}
         
-        if api_success:
-            return cash, holdings
-        else:
-            return cash, None
+        if api_success: return cash, holdings
+        else: return cash, None
 
     def get_current_5min_candle(self, ticker):
         try:
             stock = yf.Ticker(ticker)
             df = stock.history(period="5d", interval="1m", prepost=True, timeout=5)
             
-            if df.empty:
-                return None
+            if df.empty: return None
                 
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.droplevel(1)
                 
             df.index = df.index.tz_convert('America/New_York')
-            
             regular_market = df.between_time('09:30', '15:59')
             
-            if regular_market.empty:
-                return None
+            if regular_market.empty: return None
                 
             typical_price = (regular_market['High'] + regular_market['Low'] + regular_market['Close']) / 3.0
             vol_price = typical_price * regular_market['Volume']
@@ -248,25 +252,20 @@ class KoreaInvestmentBroker:
             current_vwap = float(vwap_series.iloc[-1]) if not vwap_series.empty else 0.0
             
             resampled = regular_market.resample('5min', label='left', closed='left').agg({
-                'Open': 'first',
-                'High': 'max',
-                'Low': 'min',
-                'Close': 'last',
-                'Volume': 'sum'
+                'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
             }).dropna()
             
-            if resampled.empty:
-                return None
+            if resampled.empty: return None
                 
             resampled['Vol_MA10'] = resampled['Volume'].rolling(10, min_periods=1).mean()
             resampled['Vol_MA20'] = resampled['Volume'].rolling(20, min_periods=1).mean()
             
             last_candle = resampled.iloc[-1]
-            
             vol_ma10 = float(last_candle['Vol_MA10']) if not pd.isna(last_candle['Vol_MA10']) else float(last_candle['Volume'])
             vol_ma20 = float(last_candle['Vol_MA20']) if not pd.isna(last_candle['Vol_MA20']) else float(last_candle['Volume'])
             
-            latest_1m = df.iloc[-1]
+            # 🚨 [수술 완료] 애프터마켓의 유령 캔들 오염 방지를 위해 필터링된 정규장(regular_market) 마지막 데이터 사용
+            latest_1m = regular_market.iloc[-1] 
             
             return {
                 'open': float(last_candle['Open']),
@@ -301,17 +300,6 @@ class KoreaInvestmentBroker:
         except Exception as e:
             print(f"❌ [한투 API] 현재가 우회 조회 실패: {e}")
         return 0.0
-# ==========================================================
-# [broker.py] - Part 2/2 부 (하반부)
-# 🌟 100% 통합 완성본 🌟
-# ⚠️ 수술 내역: 야후 파이낸스(yfinance) 좀비 스레드 누적 방지
-# 모든 history() 호출에 timeout=5 파라미터 강제 주입 완료
-# 🚨 [V25.19 핫픽스] 토큰 만료 시간 타임존(Timezone) Naive/Aware 충돌 교정
-# 🚨 [V25.19 핫픽스] Windows 환경 임시 파일 권한(Permission) 락 충돌 방어 (shutil.move 도입)
-# 🚨 [V25.20 핫픽스] 잭팟 스윕 피니셔 디커플링 연산을 위한 ord_psbl_qty(순수 매도 가능 수량) 확장 이식
-# 🚨 [V25.23 디커플링] 범용 1분봉 스캔 엔진(get_1min_candles_df) 신설 탑재 (API 의존성 적출)
-# 🚨 [V25.25 핫픽스] 애프터마켓(AFTER_LIMIT) KIS 주문 코드 규격(00) 교정 (장마감 코드 34 충돌 방어)
-# ==========================================================
 
     def get_ask_price(self, ticker):
         try:
@@ -320,10 +308,8 @@ class KoreaInvestmentBroker:
             res = self._call_api("HHDFS76200100", "/uapi/overseas-price/v1/quotations/inquire-asking-price", "GET", params=params)
             if res.get('rt_cd') == '0':
                 output2 = res.get('output2', [])
-                if isinstance(output2, list) and len(output2) > 0:
-                    return float(output2[0].get('pask1', 0.0))
-                elif isinstance(output2, dict):
-                    return float(output2.get('pask1', 0.0))
+                if isinstance(output2, list) and len(output2) > 0: return float(output2[0].get('pask1', 0.0))
+                elif isinstance(output2, dict): return float(output2.get('pask1', 0.0))
         except Exception as e:
             print(f"❌ [한투 API] 매도 1호가 조회 실패: {e}")
         return 0.0
@@ -335,10 +321,8 @@ class KoreaInvestmentBroker:
             res = self._call_api("HHDFS76200100", "/uapi/overseas-price/v1/quotations/inquire-asking-price", "GET", params=params)
             if res.get('rt_cd') == '0':
                 output2 = res.get('output2', [])
-                if isinstance(output2, list) and len(output2) > 0:
-                    return float(output2[0].get('pbid1', 0.0))
-                elif isinstance(output2, dict):
-                    return float(output2.get('pbid1', 0.0))
+                if isinstance(output2, list) and len(output2) > 0: return float(output2[0].get('pbid1', 0.0))
+                elif isinstance(output2, dict): return float(output2.get('pbid1', 0.0))
         except Exception as e:
             print(f"❌ [한투 API] 매수 1호가 조회 실패: {e}")
         return 0.0
@@ -352,17 +336,13 @@ class KoreaInvestmentBroker:
                 now_est = datetime.datetime.now(est)
                 
                 cutoff_date = now_est.date()
-                if now_est.time() < datetime.time(16, 0):
-                    cutoff_date -= datetime.timedelta(days=1)
+                if now_est.time() < datetime.time(16, 0): cutoff_date -= datetime.timedelta(days=1)
                 
-                if hist.index.tzinfo is None:
-                    hist.index = hist.index.tz_localize('UTC').tz_convert(est)
-                else:
-                    hist.index = hist.index.tz_convert(est)
+                if hist.index.tzinfo is None: hist.index = hist.index.tz_localize('UTC').tz_convert(est)
+                else: hist.index = hist.index.tz_convert(est)
                     
                 past_hist = hist[hist.index.date <= cutoff_date]
-                if not past_hist.empty:
-                    return float(past_hist['Close'].iloc[-1])
+                if not past_hist.empty: return float(past_hist['Close'].iloc[-1])
         except Exception as e:
             print(f"⚠️ [야후 파이낸스] 전일 정규장 종가 파싱 에러, 한투 API 우회 가동: {e}")
 
@@ -370,8 +350,7 @@ class KoreaInvestmentBroker:
             excg_cd = self._get_exchange_code(ticker, target_api="PRICE")
             params = {"AUTH": "", "EXCD": excg_cd, "SYMB": ticker}
             res = self._call_api("HHDFS76200200", "/uapi/overseas-price/v1/quotations/price", "GET", params=params)
-            if res.get('rt_cd') == '0':
-                return float(res.get('output', {}).get('base', 0.0))
+            if res.get('rt_cd') == '0': return float(res.get('output', {}).get('base', 0.0))
         except Exception as e:
             print(f"❌ [한투 API] 전일종가 우회 조회 실패: {e}")
         return 0.0
@@ -386,10 +365,7 @@ class KoreaInvestmentBroker:
             
         try:
             excg_cd = self._get_exchange_code(ticker, target_api="PRICE")
-            params = {
-                "AUTH": "", "EXCD": excg_cd, "SYMB": ticker,
-                "GUBN": "0", "BYMD": "", "MODP": "1"
-            }
+            params = {"AUTH": "", "EXCD": excg_cd, "SYMB": ticker, "GUBN": "0", "BYMD": "", "MODP": "1"}
             res = self._call_api("HHDFS76240000", "/uapi/overseas-price/v1/quotations/dailyprice", "GET", params=params)
             if res.get('rt_cd') == '0':
                 output2 = res.get('output2', [])
@@ -398,7 +374,6 @@ class KoreaInvestmentBroker:
                     return sum(closes) / len(closes)
         except Exception as e:
             print(f"❌ [한투 API] MA5 우회 조회 실패: {e}")
-            
         return 0.0
 
     def get_1min_candles_df(self, ticker):
@@ -406,29 +381,16 @@ class KoreaInvestmentBroker:
             stock = yf.Ticker(ticker)
             df = stock.history(period="1d", interval="1m", prepost=True, timeout=5)
             
-            if df.empty:
-                return None
-                
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.droplevel(1)
+            if df.empty: return None
+            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.droplevel(1)
                 
             est = pytz.timezone('US/Eastern')
-            if df.index.tz is None:
-                df.index = df.index.tz_localize('UTC').tz_convert(est)
-            else:
-                df.index = df.index.tz_convert(est)
+            if df.index.tz is None: df.index = df.index.tz_localize('UTC').tz_convert(est)
+            else: df.index = df.index.tz_convert(est)
                 
-            df = df.rename(columns={
-                'High': 'high',
-                'Low': 'low',
-                'Close': 'close',
-                'Volume': 'volume'
-            })
-            
+            df = df.rename(columns={'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
             df['time_est'] = df.index.strftime('%H%M00')
-            
             return df[['high', 'low', 'close', 'volume', 'time_est']]
-            
         except Exception as e:
             print(f"⚠️ [Broker] 야후 파이낸스 범용 1분봉 파싱 에러 ({ticker}): {e}")
             return None
@@ -459,30 +421,24 @@ class KoreaInvestmentBroker:
             if not orders: return True
             
             target_orders = orders
-            if side == "BUY":
-                target_orders = [o for o in orders if o.get('sll_buy_dvsn_cd') == '02']
-            elif side == "SELL":
-                target_orders = [o for o in orders if o.get('sll_buy_dvsn_cd') == '01']
+            if side == "BUY": target_orders = [o for o in orders if o.get('sll_buy_dvsn_cd') == '02']
+            elif side == "SELL": target_orders = [o for o in orders if o.get('sll_buy_dvsn_cd') == '01']
                 
             if not target_orders: return True
             
-            for o in target_orders: 
-                self.cancel_order(ticker, o.get('odno'))
+            for o in target_orders: self.cancel_order(ticker, o.get('odno'))
             time.sleep(5)
             
         final_orders = self.get_unfilled_orders_detail(ticker)
         failed_orders = []
         
-        if side == "BUY":
-            failed_orders = [o for o in final_orders if o.get('sll_buy_dvsn_cd') == '02']
-        elif side == "SELL":
-            failed_orders = [o for o in final_orders if o.get('sll_buy_dvsn_cd') == '01']
-        else:
-            failed_orders = final_orders
+        if side == "BUY": failed_orders = [o for o in final_orders if o.get('sll_buy_dvsn_cd') == '02']
+        elif side == "SELL": failed_orders = [o for o in final_orders if o.get('sll_buy_dvsn_cd') == '01']
+        else: failed_orders = final_orders
             
         if failed_orders:
             failed_odnos = [o.get('odno') for o in failed_orders]
-            error_msg = f"[FATAL ERROR] {ticker} 미체결 주문 취소 실패! (Double Spending 방어용 하드 락 발동). 미취소 ODNO: {failed_odnos}"
+            error_msg = f"[FATAL ERROR] {ticker} 미체결 주문 취소 실패! 미취소 ODNO: {failed_odnos}"
             print(f"🚨 {error_msg}")
             raise Exception(error_msg)
             
@@ -513,19 +469,13 @@ class KoreaInvestmentBroker:
         target_orders = []
         for o in orders:
             if o.get('sll_buy_dvsn_cd') == sll_buy_cd:
-                raw_p1 = o.get('ft_ord_unpr3', 0)
-                raw_p2 = o.get('ord_unpr', 0)
-                raw_p3 = o.get('ovrs_ord_unpr', 0)
-                
+                raw_p1, raw_p2, raw_p3 = o.get('ft_ord_unpr3', 0), o.get('ord_unpr', 0), o.get('ovrs_ord_unpr', 0)
                 o_price = 0.0
                 for rp in [raw_p1, raw_p2, raw_p3]:
                     try:
                         val = float(rp)
-                        if val > 0:
-                            o_price = val
-                            break
+                        if val > 0: o_price, _ = val, True
                     except: pass
-
                 for tp in target_prices:
                     if o_price > 0 and abs(o_price - tp) < 0.005: 
                         target_orders.append(o)
@@ -537,8 +487,13 @@ class KoreaInvestmentBroker:
             
         return len(target_orders)
 
-    # MODIFIED: [V25.25 핫픽스] 애프터마켓 지정가 코드("00") 정규화 이식
     def send_order(self, ticker, side, qty, price, order_type="LIMIT"):
+        # 🚨 [수술 완료] API Reject 방어: 음수 또는 0주 주문 원천 차단
+        order_qty = int(qty)
+        if order_qty <= 0:
+            print(f"🚨 [Broker] send_order 거부: 유효하지 않은 수량 ({qty})")
+            return {'rt_cd': '999', 'msg1': f'유효하지 않은 주문 수량: {qty}'}
+
         tr_id = "TTTT1002U" if side == "BUY" else "TTTT1006U"
         excg_cd = self._get_exchange_code(ticker, target_api="ORDER")
 
@@ -551,10 +506,14 @@ class KoreaInvestmentBroker:
 
         final_price = self._ceil_2(price)
         if order_type in ["MOC", "MOO"]: final_price = 0
+        # 🚨 [수술 완료] API Reject 방어: 지정가(LIMIT 계열) 주문 시 0달러 전송 차단
+        elif order_type not in ["MOC", "MOO"] and final_price <= 0.0:
+            print(f"🚨 [Broker] send_order 거부: {order_type} 주문에 유효하지 않은 가격 ({price})")
+            return {'rt_cd': '999', 'msg1': f'유효하지 않은 주문 가격: {price}'}
         
         body = {
             "CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd, "OVRS_EXCG_CD": excg_cd,
-            "PDNO": ticker, "ORD_QTY": str(int(qty)), "OVRS_ORD_UNPR": str(final_price),
+            "PDNO": ticker, "ORD_QTY": str(order_qty), "OVRS_ORD_UNPR": str(final_price),
             "ORD_SVR_DVSN_CD": "0", "ORD_DVSN": ord_dvsn 
         }
         res = self._call_api(tr_id, "/uapi/overseas-stock/v1/trading/order", "POST", body=body)
@@ -579,8 +538,7 @@ class KoreaInvestmentBroker:
         excg_cd = self._get_exchange_code(ticker, target_api="ORDER")
         valid_execs = []
         seen_keys = set()
-        fk200 = ""
-        nk200 = ""
+        fk200, nk200 = "", ""
         
         for attempt in range(10): 
             params = {
@@ -639,8 +597,7 @@ class KoreaInvestmentBroker:
             loop_counter += 1
             date_str = target_date.strftime('%Y%m%d')
             
-            if limit_date_str and date_str < limit_date_str:
-                break 
+            if limit_date_str and date_str < limit_date_str: break 
                 
             execs = self.get_execution_history(ticker, date_str, date_str)
             
@@ -650,7 +607,6 @@ class KoreaInvestmentBroker:
                     side_cd = ex.get('sll_buy_dvsn_cd')
                     exec_qty = int(float(ex.get('ft_ccld_qty', '0')))
                     exec_price = float(ex.get('ft_ccld_unpr3', '0'))
-                    
                     record_qty = exec_qty
                     
                     if side_cd == "02": 
@@ -658,20 +614,15 @@ class KoreaInvestmentBroker:
                             record_qty = curr_qty 
                             curr_qty = 0
                             genesis_reached = True
-                        else:
-                            curr_qty -= exec_qty
-                    else: 
-                        curr_qty += exec_qty
+                        else: curr_qty -= exec_qty
+                    else: curr_qty += exec_qty
                     
                     ledger_records.append({
                         'date': f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}",
                         'side': "BUY" if side_cd == "02" else "SELL",
-                        'qty': record_qty,
-                        'price': exec_price
+                        'qty': record_qty, 'price': exec_price
                     })
-                    
-                    if genesis_reached:
-                        break
+                    if genesis_reached: break
                         
             target_date -= datetime.timedelta(days=1)
             time.sleep(0.1) 
@@ -684,74 +635,52 @@ class KoreaInvestmentBroker:
             stock = yf.Ticker(ticker)
             splits = stock.splits
             if splits is not None and not splits.empty:
-                
                 if last_date_str == "":
                     est = pytz.timezone('US/Eastern')
                     seven_days_ago = datetime.datetime.now(est) - datetime.timedelta(days=7)
                     safe_last_date = seven_days_ago.strftime('%Y-%m-%d')
-                else:
-                    safe_last_date = last_date_str
+                else: safe_last_date = last_date_str
                     
                 for split_date_dt, ratio in splits.items():
                     split_date = split_date_dt.strftime('%Y-%m-%d')
-                    if split_date > safe_last_date:
-                        return float(ratio), split_date
-        except Exception as e:
-            print(f"⚠️ [야후 파이낸스] 액면분할 조회 에러: {e}")
+                    if split_date > safe_last_date: return float(ratio), split_date
+        except Exception as e: print(f"⚠️ [야후 파이낸스] 액면분할 조회 에러: {e}")
         return 0.0, ""
 
     def get_dynamic_sniper_target(self, index_ticker):
         try:
-            class TargetFloat(float):
-                pass
+            class TargetFloat(float): pass
             
             if index_ticker == "SOXX":
                 hv_val, weight, target_drop, base_amp = ve.get_soxl_target_drop_full()
                 ret = TargetFloat(target_drop)
-                ret.metric_val = hv_val
-                ret.weight = weight
-                ret.base_amp = base_amp
-                ret.metric_name = "SOXX HV"
+                ret.metric_val, ret.weight, ret.base_amp, ret.metric_name = hv_val, weight, base_amp, "SOXX HV"
                 ret.metric_base = round(hv_val / weight, 2) if weight > 0 else 25.0
             else:
                 vxn_val, weight, target_drop, base_amp = ve.get_tqqq_target_drop_full()
                 ret = TargetFloat(target_drop)
-                ret.metric_val = vxn_val
-                ret.weight = weight
-                ret.base_amp = base_amp
-                ret.metric_name = "실시간 VXN"
+                ret.metric_val, ret.weight, ret.base_amp, ret.metric_name = vxn_val, weight, base_amp, "실시간 VXN"
                 ret.metric_base = round(vxn_val / weight, 2) if weight > 0 else 20.0
             
             ret.is_panic = False
             ret.gap_pct = 0.0 
-            
             return ret
             
         except Exception as e:
             print(f"⚠️ [Broker] V3.1 스나이퍼 타점 반환 실패 ({index_ticker}): {e}")
             fallback_val = -8.79 if index_ticker == "SOXX" else -4.95
             ret = TargetFloat(fallback_val)
-            ret.metric_val = 0.0
-            ret.weight = 1.0
-            ret.base_amp = fallback_val
-            ret.metric_name = "통신오류(기본값)"
-            ret.metric_base = 25.0 if index_ticker == "SOXX" else 20.0
-            ret.is_panic = False
-            ret.gap_pct = 0.0
+            ret.metric_val, ret.weight, ret.base_amp, ret.metric_name, ret.metric_base = 0.0, 1.0, fallback_val, "통신오류(기본값)", 25.0 if index_ticker == "SOXX" else 20.0
+            ret.is_panic, ret.gap_pct = False, 0.0
             return ret
 
     def get_day_high_low(self, ticker):
         try:
             stock = yf.Ticker(ticker)
             hist = stock.history(period="1d", interval="1m", prepost=True, timeout=5)
-            if not hist.empty:
-                day_high = float(hist['High'].max())
-                day_low = float(hist['Low'].min())
-                return day_high, day_low
-            else:
-                return float(stock.fast_info.get('dayHigh', 0.0)), float(stock.fast_info.get('dayLow', 0.0))
-        except Exception as e:
-            print(f"⚠️ [야후 파이낸스] 고가/저가 에러, 한투 API 우회 가동: {e}")
+            if not hist.empty: return float(hist['High'].max()), float(hist['Low'].min())
+            else: return float(stock.fast_info.get('dayHigh', 0.0)), float(stock.fast_info.get('dayLow', 0.0))
+        except Exception as e: print(f"⚠️ [야후 파이낸스] 고가/저가 에러, 한투 API 우회 가동: {e}")
 
         try:
             excg_cd = self._get_exchange_code(ticker, target_api="PRICE")
@@ -760,18 +689,14 @@ class KoreaInvestmentBroker:
             if res.get('rt_cd') == '0':
                 out = res.get('output', {})
                 return float(out.get('high', 0.0)), float(out.get('low', 0.0))
-        except Exception as e:
-            print(f"❌ [한투 API] 고가/저가 우회 조회 실패: {e}")
-            
+        except Exception as e: print(f"❌ [한투 API] 고가/저가 우회 조회 실패: {e}")
         return 0.0, 0.0
 
     def get_atr_data(self, ticker):
         try:
             stock = yf.Ticker(ticker)
             hist = stock.history(period="30d", timeout=5)
-            
-            if hist.empty or len(hist) < 15:
-                return 0.0, 0.0
+            if hist.empty or len(hist) < 15: return 0.0, 0.0
                 
             hist['Prev_Close'] = hist['Close'].shift(1)
             hist['TR'] = hist.apply(lambda row: max(
@@ -787,12 +712,8 @@ class KoreaInvestmentBroker:
             last_close = float(last_row['Close'])
             
             if last_close > 0:
-                atr5_pct = (float(last_row['ATR5']) / last_close) * 100
-                atr14_pct = (float(last_row['ATR14']) / last_close) * 100
-                return round(atr5_pct, 1), round(atr14_pct, 1)
-                
+                return round((float(last_row['ATR5']) / last_close) * 100, 1), round((float(last_row['ATR14']) / last_close) * 100, 1)
             return 0.0, 0.0
-            
         except Exception as e:
             print(f"⚠️ [Broker] 실시간 ATR 연산 실패 ({ticker}): {e}")
             return 0.0, 0.0
