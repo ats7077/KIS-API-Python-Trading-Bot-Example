@@ -12,6 +12,7 @@
 # 토큰 오발탄(mig) 제거 및 ATR 결측치(NaN) 방어 
 # 🚨 [V27.18 팩트 교정] 주식 정수 매매 원칙에 따른 소수점 내림(Truncation) 및 잔여 예산 이월 로직 100% 원상 복구
 # 🚨 [V26.06 그랜드 수술] 심층 결함 비파괴(Fail-Safe) 방어막 이식 및 코파일럿 오진(결함 #4) 영구 차단 락아웃 적용
+# 🚨 [V26.06 3차 심층수술] VWAP 다일 누적 오염, 유령 주문 페이징, Null 붕괴 등 7대 마이크로 엣지 케이스 전면 교정
 # ==========================================================
 
 import requests
@@ -77,7 +78,7 @@ class KoreaInvestmentBroker:
                 with os.fdopen(fd, 'w', encoding='utf-8') as f:
                     json.dump({'token': self.token, 'expire': expire_str}, f)
                     f.flush()
-                    # MODIFIED: [결함 #5] fsync 스레드 경합 방어 (원자적 쓰기 동기화 위치 및 대상 교정)
+                    # MODIFIED: [1차 수술] fsync 스레드 경합 방어 (원자적 쓰기 동기화 위치 및 대상 교정)
                     os.fsync(f.fileno())
                 
                 shutil.move(temp_path, self.token_file)
@@ -97,9 +98,10 @@ class KoreaInvestmentBroker:
         }
 
     def _api_request(self, method, url, headers, params=None, data=None):
+        # MODIFIED: [결함 E] 광범위한 토큰 오발탄 스톰 방어 (특정 에러코드 및 메시지로 락아웃)
         TOKEN_EXPIRY_KEYWORDS = frozenset([
-            '토큰', '접근토큰', 'token', 'expired', '인증', 'authorization',
-            'egt0001', 'egt0002', 'oauth'
+            'expired', '인증', 'authorization', 'egt0001', 'egt0002', 'oauth', 
+            '접근토큰이 만료', '토큰이 유효하지'
         ])
         
         for attempt in range(2): 
@@ -142,7 +144,7 @@ class KoreaInvestmentBroker:
         if not resp_json: return {'rt_cd': '999', 'msg1': '통신 오류 또는 최대 재시도 횟수 초과'}
         return resp_json
 
-    # MODIFIED: [결함 #1] 마이너스 호가 방어 누수 원천 차단 (하한선 0.01달러 하드락 적용)
+    # MODIFIED: [1차 수술] 마이너스 호가 방어 누수 원천 차단 (하한선 0.01달러 하드락 적용)
     def _ceil_2(self, value):
         if value is None: return 0.0
         return max(0.01, math.ceil(value * 100) / 100.0)
@@ -226,9 +228,14 @@ class KoreaInvestmentBroker:
                     new_cash = self._safe_float(o2.get('ovrs_ord_psbl_amt', 0))
                     if new_cash > cash: cash = new_cash
                 
-                for item in res_hold.get('output1', []):
+                # MODIFIED: [결함 C] output1: null 응답 시 TypeError 붕괴 방어 (Safe Casting 단축 평가)
+                for item in (res_hold.get('output1') or []):
                     ticker = item.get('ovrs_pdno')
-                    # MODIFIED: [Copilot Audit Exception - 결함 #4 기각] KIS API 정수 매매 원칙 유지. 소수점(Fractional) 잔량은 반드시 내림(Truncation) 처리하여 이월해야 함. round() 캐스팅 등 임의 수정 절대 금지.
+                    # MODIFIED: [결함 D] None Ticker Key 상태 누수(State Leak) 오염 방어
+                    if not ticker:
+                        continue
+                        
+                    # MODIFIED: [Copilot Audit Exception - 2차 기각] KIS API 정수 매매 원칙 유지. 소수점(Fractional) 잔량은 반드시 내림(Truncation) 처리하여 이월해야 함. round() 캐스팅 등 임의 수정 절대 금지.
                     qty = int(self._safe_float(item.get('ovrs_cblc_qty', 0)))
                     ord_psbl_qty = int(self._safe_float(item.get('ord_psbl_qty', 0)))
                     avg = self._safe_float(item.get('pchs_avg_pric', 0))
@@ -253,12 +260,25 @@ class KoreaInvestmentBroker:
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.droplevel(1)
                 
-            df.index = df.index.tz_convert('America/New_York')
+            est = pytz.timezone('America/New_York')
+            
+            # MODIFIED: [결함 B] 타임존 Naive 런타임 붕괴 방어 (tz_localize 폴백 가드 이식)
+            if df.index.tz is None:
+                df.index = df.index.tz_localize('UTC').tz_convert(est)
+            else:
+                df.index = df.index.tz_convert(est)
+                
             regular_market = df.between_time('09:30', '15:59')
             
             if regular_market.empty: return None
+            
+            # MODIFIED: [결함 A] 다일 누적 VWAP 오염 방어 (당일 세션 데이터로 앵커링 필터링)
+            today_date = datetime.datetime.now(est).date()
+            regular_market = regular_market[regular_market.index.date == today_date]
+            
+            if regular_market.empty: return None
                 
-            # MODIFIED: [결함 #3] VWAP 결측치(NaN) 전파 및 0-거래량 연산 왜곡 방어 (High/Low/Close 결측치 캔들 절제)
+            # MODIFIED: [1차 수술] VWAP 결측치(NaN) 전파 및 0-거래량 연산 왜곡 방어 (High/Low/Close 결측치 캔들 절제)
             regular_market = regular_market.dropna(subset=['Volume', 'High', 'Low', 'Close'])
             
             typical_price = (regular_market['High'] + regular_market['Low'] + regular_market['Close']) / 3.0
@@ -267,7 +287,7 @@ class KoreaInvestmentBroker:
             cum_vol_price = vol_price.cumsum()
             cum_vol = regular_market['Volume'].cumsum()
             
-            # MODIFIED: [결함 #3] 0-거래량 캔들에 대한 VWAP 인위적 팽창 방지 (np.where 및 ffill 적용)
+            # MODIFIED: [1차 수술] 0-거래량 캔들에 대한 VWAP 인위적 팽창 방지 (np.where 및 ffill 적용)
             vwap_series = pd.Series(np.where(cum_vol > 0, cum_vol_price / cum_vol, np.nan), index=cum_vol.index).ffill() 
             current_vwap = float(vwap_series.iloc[-1]) if not vwap_series.empty else 0.0
             
@@ -358,7 +378,7 @@ class KoreaInvestmentBroker:
                 now_est = datetime.datetime.now(est)
                 
                 cutoff_date = now_est.date()
-                # MODIFIED: [결함 #6] 16:00 정각 API 파이프라인 지연(Dead-Zone) 방어를 위해 버퍼 30초 연장
+                # MODIFIED: [1차 수술] 16:00 정각 API 파이프라인 지연(Dead-Zone) 방어를 위해 버퍼 30초 연장
                 if now_est.time() <= datetime.time(16, 0, 30): cutoff_date -= datetime.timedelta(days=1)
                 
                 if hist.index.tzinfo is None: hist.index = hist.index.tz_localize('UTC').tz_convert(est)
@@ -417,25 +437,43 @@ class KoreaInvestmentBroker:
         except Exception as e:
             print(f"⚠️ [Broker] 야후 파이낸스 범용 1분봉 파싱 에러 ({ticker}): {e}")
             return None
-    def get_unfilled_orders(self, ticker):
-        excg_cd = self._get_exchange_code(ticker, target_api="ORDER")
-        params = {"CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd, "OVRS_EXCG_CD": excg_cd, "SORT_SQN": "DS", "CTX_AREA_FK200": "", "CTX_AREA_NK200": ""}
-        res = self._call_api("TTTS3018R", "/uapi/overseas-stock/v1/trading/inquire-nccs", "GET", params=params)
-        if res.get('rt_cd') == '0':
-            output = res.get('output', [])
-            if isinstance(output, dict): output = [output]
-            return [item.get('odno') for item in output if item.get('pdno') == ticker]
-        return []
-
     def get_unfilled_orders_detail(self, ticker):
         excg_cd = self._get_exchange_code(ticker, target_api="ORDER")
-        params = {"CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd, "OVRS_EXCG_CD": excg_cd, "SORT_SQN": "DS", "CTX_AREA_FK200": "", "CTX_AREA_NK200": ""}
-        res = self._call_api("TTTS3018R", "/uapi/overseas-stock/v1/trading/inquire-nccs", "GET", params=params)
-        if res.get('rt_cd') == '0':
-            output = res.get('output', [])
-            if isinstance(output, dict): output = [output]
-            return [item for item in output if item.get('pdno') == ticker]
-        return []
+        valid_orders = []
+        fk200, nk200 = "", ""
+        
+        # MODIFIED: [3차 수술 - 결함 F] 미체결 유령 주문(Ghost Order) 1페이지 밖 누락을 방어하기 위한 페이징(Pagination) 루프 이식
+        for attempt in range(10):
+            params = {
+                "CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd, "OVRS_EXCG_CD": excg_cd, 
+                "SORT_SQN": "DS", "CTX_AREA_FK200": fk200, "CTX_AREA_NK200": nk200
+            }
+            headers = self._get_header("TTTS3018R")
+            url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-nccs"
+            res, resp_json = self._api_request("GET", url, headers, params=params)
+            
+            if res and resp_json.get('rt_cd') == '0':
+                output = resp_json.get('output', [])
+                if isinstance(output, dict): output = [output]
+                valid_orders.extend([item for item in output if item.get('pdno') == ticker])
+                
+                tr_cont = res.headers.get('tr_cont', '') if hasattr(res, 'headers') else ''
+                fk200 = resp_json.get('ctx_area_fk200', '').strip()
+                nk200 = resp_json.get('ctx_area_nk200', '').strip()
+                
+                if tr_cont in ['M', 'F'] and nk200:
+                    time.sleep(0.3)
+                    continue
+                else: break
+            else:
+                break
+                
+        return valid_orders
+
+    def get_unfilled_orders(self, ticker):
+        # MODIFIED: [3차 수술 - 결함 F] 페이징 방어막이 이식된 detail 함수를 호출하여 구조적 중복 제거 및 무결성 확보
+        details = self.get_unfilled_orders_detail(ticker)
+        return [item.get('odno') for item in details]
 
     def cancel_all_orders_safe(self, ticker, side=None):
         for i in range(3):
@@ -601,13 +639,20 @@ class KoreaInvestmentBroker:
                 output = resp_json.get('output', [])
                 if isinstance(output, dict): output = [output] 
                 for item in output:
-                    if float(item.get('ft_ccld_qty', '0')) > 0:
-                        unique_key = f"{item.get('odno')}_{item.get('ord_tmd')}_{item.get('ft_ccld_qty')}_{item.get('ft_ccld_unpr3')}"
-                        if unique_key not in seen_keys:
-                            seen_keys.add(unique_key)
-                            valid_execs.append(item)
+                    # MODIFIED: [3차 수술 - 결함 G] API Null 응답에 의한 float(None) 런타임 붕괴 방어 (Safe Casting)
+                    try:
+                        raw_qty = item.get('ft_ccld_qty') or '0'
+                        raw_unpr = item.get('ft_ccld_unpr3') or '0'
+                        if float(raw_qty) > 0:
+                            unique_key = f"{item.get('odno')}_{item.get('ord_tmd')}_{raw_qty}_{raw_unpr}"
+                            if unique_key not in seen_keys:
+                                seen_keys.add(unique_key)
+                                valid_execs.append(item)
+                    except (TypeError, ValueError) as e:
+                        print(f"⚠️ [Broker] 체결내역 파싱 중 Safe Casting 예외 발생 (스킵): {e}")
+                        continue
                         
-                tr_cont = res.headers.get('tr_cont', '')
+                tr_cont = res.headers.get('tr_cont', '') if hasattr(res, 'headers') else ''
                 fk200 = resp_json.get('ctx_area_fk200', '').strip()
                 nk200 = resp_json.get('ctx_area_nk200', '').strip()
                 
@@ -633,7 +678,7 @@ class KoreaInvestmentBroker:
         if curr_qty == 0: return [], 0, 0.0
             
         ledger_records = []
-        # MODIFIED: [결함 #2] 타임존 Split-Brain 방어 (America/New_York 전역 단일화)
+        # MODIFIED: [1차 수술] 타임존 Split-Brain 방어 (America/New_York 전역 단일화)
         est = pytz.timezone('America/New_York')
         target_date = datetime.datetime.now(est)
         genesis_reached = False
@@ -650,9 +695,15 @@ class KoreaInvestmentBroker:
             if execs:
                 execs.sort(key=lambda x: x.get('ord_tmd', '000000'), reverse=True)
                 for ex in execs:
-                    side_cd = ex.get('sll_buy_dvsn_cd')
-                    exec_qty = int(float(ex.get('ft_ccld_qty', '0')))
-                    exec_price = float(ex.get('ft_ccld_unpr3', '0'))
+                    # MODIFIED: [3차 수술 - 결함 G] 장부 복원 도중 float(None) 예외 발생 시 파이프라인 강제 절단 방어
+                    try:
+                        side_cd = ex.get('sll_buy_dvsn_cd')
+                        exec_qty = int(float(ex.get('ft_ccld_qty') or '0'))
+                        exec_price = float(ex.get('ft_ccld_unpr3') or '0')
+                    except (TypeError, ValueError) as e:
+                        print(f"⚠️ [Broker] 장부 복원 중 Safe Casting 예외 발생 (해당 로트 스킵): {e}")
+                        continue
+                        
                     record_qty = exec_qty
                     
                     if side_cd == "02": 
@@ -753,7 +804,7 @@ class KoreaInvestmentBroker:
                 
             hist['Prev_Close'] = hist['Close'].shift(1)
             
-            # MODIFIED: [결함 #7] 야후 파이낸스 High/Low 결측치(NaN)에 의한 롤링 윈도우 연쇄 오염 차단
+            # MODIFIED: [1차 수술] 야후 파이낸스 High/Low 결측치(NaN)에 의한 롤링 윈도우 연쇄 오염 차단
             hist = hist.dropna(subset=['High', 'Low', 'Close']).copy()
             
             hist['TR'] = hist.apply(lambda row: max(
