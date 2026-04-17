@@ -15,6 +15,7 @@
 # 🚨 [V27.03 핫픽스] 스냅샷 로드 시 내부 날짜 검사(Validation) 전면 폐기로 무한루프 영구 방어
 # 🚨 [V27.05 그랜드 수술] API Reject 방어(소수점 덤핑 차단), ZeroDivision 방어 및 Safe Casting 완벽 이식
 # 🚨 [V27.15 코파일럿 합작] FD 누수 방어, 스냅샷 덮어쓰기 락온, 0달러 로트 배제 및 TypeError 런타임 붕괴 방어막 이식 완료
+# MODIFIED: [V28.08 그랜드 수술] 스냅샷 영구 박제에 따른 VWAP 디커플링 방어막 완벽 이식 (0주 새출발 타임 패러독스 영구 소각)
 # ==========================================================
 import math
 import os
@@ -30,7 +31,6 @@ class ReversionStrategy:
         }
         self.executed = {"BUY_BUDGET": {}, "SELL_QTY": {}}
         self.state_loaded = {}
-        # NEW: [was_holding 영속화] 서버 재시작 후 플래그 증발 방어 — 인메모리 저장소 선언
         self.was_holding = {}
         
         self.U_CURVE_WEIGHTS = [
@@ -62,7 +62,6 @@ class ReversionStrategy:
                     for k in self.executed.keys():
                         raw_val = data.get("executed", {}).get(k, 0)
                         self.executed[k][ticker] = int(raw_val) if k == "SELL_QTY" else float(raw_val)
-                    # NEW: [was_holding 영속화] 서버 재시작 후 플래그 복원 — 파일에서 로드
                     self.was_holding[ticker] = bool(data.get("was_holding", False))
                     self.state_loaded[ticker] = today_str
                     return
@@ -73,7 +72,6 @@ class ReversionStrategy:
             self.residual[k][ticker] = 0.0
         self.executed["BUY_BUDGET"][ticker] = 0.0
         self.executed["SELL_QTY"][ticker] = 0
-        # NEW: [was_holding 영속화] 초기 파일 부재 시 기본값 False로 안전 초기화
         self.was_holding[ticker] = False
         self.state_loaded[ticker] = today_str
 
@@ -87,7 +85,6 @@ class ReversionStrategy:
                 "BUY_BUDGET": float(self.executed.get("BUY_BUDGET", {}).get(ticker, 0.0)),
                 "SELL_QTY": int(self.executed.get("SELL_QTY", {}).get(ticker, 0))
             },
-            # NEW: [was_holding 영속화] 서버 재시작 후 플래그 복원이 가능하도록 JSON 파일 저장
             "was_holding": bool(self.was_holding.get(ticker, False))
         }
         temp_path = None
@@ -96,7 +93,6 @@ class ReversionStrategy:
             if dir_name and not os.path.exists(dir_name):
                 os.makedirs(dir_name, exist_ok=True)
             fd, temp_path = tempfile.mkstemp(dir=dir_name, text=True)
-            # MODIFIED: [파일 디스크립터 누수 및 fsync 붕괴 방어] os.fsync(f.fileno()) 표준화 및 자원 해제 보장
             with os.fdopen(fd, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=4)
                 f.flush()
@@ -112,7 +108,6 @@ class ReversionStrategy:
 
     def save_daily_snapshot(self, ticker, plan_data):
         snap_file = self._get_snapshot_file(ticker)
-        # MODIFIED: [스냅샷 덮어쓰기 붕괴 방어] 당일 최초 1회 박제(Idempotency) 로직 적용하여 장중 변이 완벽 차단
         if os.path.exists(snap_file):
             return
             
@@ -164,7 +159,6 @@ class ReversionStrategy:
 
     def record_execution(self, ticker, side, qty, exec_price):
         self._load_state_if_needed(ticker)
-        # MODIFIED: [실행 기록 TypeError 및 예산 증발 방어] 명시적 형변환(Safe Casting)을 통한 런타임 보호
         safe_qty = int(float(qty or 0))
         safe_price = float(exec_price or 0.0)
         
@@ -176,20 +170,23 @@ class ReversionStrategy:
         self._save_state(ticker)
 
     def get_dynamic_plan(self, ticker, curr_p, prev_c, current_weight, vwap_status, min_idx, alloc_cash, q_data, is_snapshot_mode=False):
-        if not is_snapshot_mode:
+        # NEW: [min_idx 결측치 선제적 캐스팅 및 런타임 붕괴 방어]
+        min_idx = int(min_idx) if min_idx is not None else -1
+
+        # MODIFIED: [스냅샷 영구 박제 및 VWAP 1분봉 디커플링]
+        # VWAP 슬라이싱 런타임(min_idx 0~29)일 때는 스냅샷을 반환하지 않고 실시간 잔차 연산 돌입.
+        # /sync 등 단순 조회(min_idx < 0) 시에만 스냅샷을 반환하여 기억상실(Amnesia) 하극상 엣지 케이스 영구 차단.
+        if not is_snapshot_mode and min_idx < 0:
             cached_plan = self.load_daily_snapshot(ticker)
             if cached_plan:
                 return cached_plan
 
         self._load_state_if_needed(ticker)
 
-        # MODIFIED: [min_idx 결측치 런타임 붕괴 방어] int 캐스팅 및 None 폴백 적용
-        min_idx = int(min_idx) if min_idx is not None else -1
         if min_idx < 0 or min_idx >= 30:
             if not vwap_status.get('is_strong_up') and not vwap_status.get('is_strong_down'):
                 return {"orders": [], "trigger_loc": False, "total_q": 0}
 
-        # MODIFIED: [무상증자/0달러 로트 평단가 붕괴 방어] 가격이 0 초과인 정상 로트만 연산에 참여하여 ZeroDivision 및 왜곡 차단
         valid_q_data = [item for item in q_data if float(item.get('price', 0.0)) > 0]
         total_q = sum(int(item.get("qty", 0)) for item in valid_q_data)
         total_inv = sum(float(item.get('qty', 0)) * float(item.get('price', 0.0)) for item in valid_q_data)
@@ -257,7 +254,6 @@ class ReversionStrategy:
                 if curr_p >= trigger_jackpot:
                     orders.append({"side": "SELL", "qty": rem_qty_total, "price": trigger_jackpot})
                 else:
-                    # MODIFIED: [상위 레이어 초과 매도 산출 오류 차단] 실제로 1층에서 할당된 수량만 차감하도록 로직 분리
                     available_l1 = min(l1_qty, rem_qty_total)
                     l1_queued = 0
                     if available_l1 > 0 and curr_p >= trigger_l1:
@@ -304,7 +300,6 @@ class ReversionStrategy:
                     orders.append({"side": "BUY", "qty": alloc_q2, "price": p2_trigger})
 
         else: # SELL
-            # 🚨 [수술 완료] int 강제 캐스팅으로 소수점 주식 찌꺼기 100% 절단
             rem_qty_total = max(0, int(total_q) - int(self.executed["SELL_QTY"].get(ticker, 0)))
             if rem_qty_total <= 0:
                 return {"orders": [], "trigger_loc": False, "total_q": total_q}
