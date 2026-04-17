@@ -1,5 +1,5 @@
 # ==========================================================
-# [scheduler_core.py] - 🌟 100% 통합 완성본 (V27.24) 🌟
+# [scheduler_core.py] - 🌟 100% 통합 완성본 (V27.25) 🌟
 # ⚠️ 이 주석 및 파일명 표기는 절대 지우지 마세요.
 # 💡 [V24.09 패치] API 결측치(None) 방어용 Safe Casting 전면 이식 완료
 # 💡 [V24.10 수술] V_REV 동적 에스크로 차감 방어 (이중 차감 방지)
@@ -8,6 +8,7 @@
 # 🚨 [V27.13 그랜드 수술] 이벤트 루프 교착 방어 및 math.floor 평단가 왜곡 교정 완료
 # 🚨 [V27.21 그랜드 수술] 5분 정산 윈도우 확장, TOCTOU 락온, 일반 종목 예산 누수 방어, Fail-Open 차단 및 Orphan 주문 초기화 보류(Skip) 이식 완비
 # 🚀 [V27.24 그랜드 수술] 타임 패러독스 원천 차단! 08:30 동기화를 10:00 KST 확정 정산 시간으로 자동 시프트(Shift)하는 스마트 딜레이 엔진 탑재
+# 🚀 [V27.25 그랜드 수술] 서머타임 데드락 해제, 잔고 조회 API 병목(O(N)->O(1)) 격상, 계절변경 Fail-Open 맹점 영구 적출
 # ==========================================================
 import os
 import logging
@@ -161,7 +162,9 @@ async def scheduled_force_reset(context):
     target_minutes = target_hour * 60
     
     diff = min((now_minutes - target_minutes) % 1440, (target_minutes - now_minutes) % 1440)
-    if diff > 2:
+    
+    # MODIFIED: [치명적 오류 1 해결] 서머타임 변경(1시간) 시 스케줄러 오차를 포용하도록 하드스탑 락을 65분으로 완화 (데드락 방어)
+    if diff > 65:
         return
         
     if not is_market_open():
@@ -184,12 +187,15 @@ async def scheduled_force_reset(context):
         msg_addons = ""
         HARD_STOP_THRESHOLDS = {"TQQQ": -15.0, "SOXL": -20.0}
         
+        # MODIFIED: [치명적 오류 2 해결] 루프 내부에서 불필요하게 반복 호출되던 전체 계좌 잔고 조회를 루프 외부로 1단계 격상하여 O(1) 호출로 최적화
+        async with tx_lock:
+            _, holdings_snap = await asyncio.to_thread(broker.get_account_balance)
+            
         for t in cfg.get_active_tickers():
             rev_state = cfg.get_reverse_state(t)
             
             if rev_state.get("is_active"):
                 async with tx_lock:
-                    _, holdings_snap = await asyncio.to_thread(broker.get_account_balance)
                     curr_p = await asyncio.to_thread(broker.get_current_price, t)
                 
                 h_data = (holdings_snap or {}).get(t) or {}
@@ -226,7 +232,7 @@ async def scheduled_force_reset(context):
                         if changed:
                             cfg._save_json(cfg.FILES["LEDGER"], ledger_data)
                             
-                        msg_addons += f"\n🚨 <b>[{t}] 하드스탑 확정 탈출 발동 (수익률: {curr_ret:.2f}% <= 기준: {exit_threshold}%)!</b>\n▫️ 격리 병동을 즉시 폐쇄하고 V14 본대로 완벽히 복 복귀했습니다."
+                        msg_addons += f"\n🚨 <b>[{t}] 하드스탑 확정 탈출 발동 (수익률: {curr_ret:.2f}% <= 기준: {exit_threshold}%)!</b>\n▫️ 격리 병동을 즉시 폐쇄하고 V14 본대로 완벽히 복귀했습니다."
                     else:
                         cfg.increment_reverse_day(t)
                 else:
@@ -247,7 +253,7 @@ async def delayed_auto_sync(context):
     await run_auto_sync(context, "10:00")
 
 async def scheduled_auto_sync_summer(context):
-    if not is_dst_active(): return 
+    # MODIFIED: [치명적 오류 3 해결] 계절 변경 시 동기화가 영구 누락되는 Fail-Open 방어막 적출
     
     kst = pytz.timezone('Asia/Seoul')
     now = datetime.datetime.now(kst)
@@ -263,7 +269,7 @@ async def scheduled_auto_sync_summer(context):
     await run_auto_sync(context, "10:00")
 
 async def scheduled_auto_sync_winter(context):
-    if is_dst_active(): return 
+    # MODIFIED: [치명적 오류 3 해결] 계절 변경 시 동기화가 영구 누락되는 Fail-Open 방어막 적출
     
     kst = pytz.timezone('Asia/Seoul')
     now = datetime.datetime.now(kst)
@@ -294,3 +300,4 @@ async def run_auto_sync(context, time_str):
         await bot._display_ledger(success_tickers[0], chat_id, context, message_obj=status_msg, pre_fetched_holdings=holdings)
     else:
         await status_msg.edit_text(f"📝 <b>[{time_str}] 장부 동기화 완료</b> (표시할 진행 중인 장부가 없습니다)", parse_mode='HTML')
+
