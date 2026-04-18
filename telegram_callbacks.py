@@ -1,10 +1,8 @@
 # ==========================================================
 # [telegram_callbacks.py] - 🌟 100% 통합 완성본 🌟 (Full Version)
 # MODIFIED: [V28.14 통이관 및 큐 삭제 런타임 에러 완전 소각]
-# QueueLedger 객체 의존성(AttributeError: 'queues') 전면 철거. 
-# DEL_Q(삭제) 및 SET_INIT(통이관) 격발 시 복잡한 클래스를 거치지 않고 
-# data/queue_ledger.json 파일을 직접 열어 덮어쓰는 순수 다이렉트 
-# 파일 I/O(Direct File I/O) 우회망 완벽 이식 및 CALIB 연동 완료.
+# MODIFIED: [V28.15 그랜드 수술] 물량 통이관(SET_INIT) 콜백 라우터 영구 소각 및 
+# V14 <-> V-REV 모드 전환 시 실잔고 '0주 락온(Lock-on)' 절대 방어막 이식 완료
 # ==========================================================
 import logging
 import datetime
@@ -153,13 +151,11 @@ class TelegramCallbacks:
                 if action == "DEL_Q":
                     new_q = [item for item in ticker_q if item.get('date') != target_date]
                     
-                    # MODIFIED: 객체 의존성 철거 및 다이렉트 파일 I/O 적용
                     all_q[ticker] = new_q
                     os.makedirs(os.path.dirname(q_file), exist_ok=True)
                     with open(q_file, 'w', encoding='utf-8') as f:
                         json.dump(all_q, f, ensure_ascii=False, indent=4)
                         
-                    # 메모리 캐시 강제 리로드
                     if getattr(self, 'queue_ledger', None) and hasattr(self.queue_ledger, '_load'):
                         try:
                             self.queue_ledger._load()
@@ -500,6 +496,15 @@ class TelegramCallbacks:
             new_ver = sub
             ticker = data[2]
             
+            # 🚀 [0주 락온(Lock-on) 절대 방어막]
+            async with self.tx_lock:
+                _, holdings = self.broker.get_account_balance()
+            qty = int(float(holdings.get(ticker, {}).get('qty', 0)))
+            
+            if qty > 0:
+                await query.answer(f"🚨 [전환 차단] {ticker} 잔고가 {qty}주 있습니다. 0주(전량 매도) 상태에서만 모드 전환이 가능합니다.", show_alert=True)
+                return
+            
             if new_ver == "V_REV":
                 if not (os.path.exists("strategy_reversion.py") and os.path.exists("queue_ledger.py")):
                     await query.answer("🚨 [개봉박두] V-REV 엔진 모듈 파일이 존재하지 않아 전환할 수 없습니다! (업데이트 필요)", show_alert=True)
@@ -525,6 +530,15 @@ class TelegramCallbacks:
         elif action == "SET_VER_CONFIRM":
             mode_type = sub 
             ticker = data[2]
+
+            # 🚀 [0주 락온(Lock-on) 절대 방어막 교차 검증]
+            async with self.tx_lock:
+                _, holdings = self.broker.get_account_balance()
+            qty = int(float(holdings.get(ticker, {}).get('qty', 0)))
+            
+            if qty > 0:
+                await query.answer(f"🚨 [전환 차단] {ticker} 잔고가 {qty}주 있습니다. 0주(전량 매도) 상태에서만 모드 전환이 가능합니다.", show_alert=True)
+                return
             
             if mode_type in ["AUTO", "MANUAL"]:
                 self.cfg.set_version(ticker, "V_REV")
@@ -584,62 +598,6 @@ class TelegramCallbacks:
             self.cfg.set_upward_sniper_mode(ticker, mode_val == "ON")
             await query.edit_message_text(f"✅ <b>[{ticker}]</b> 상방 스나이퍼 모드 변경 완료: {'🎯 ON (가동중)' if mode_val == 'ON' else '⚪ OFF (대기중)'}", parse_mode='HTML')
             
-        elif action == "SET_INIT":
-            ticker = data[2]
-            if sub == "V_REV":
-                msg, markup = self.view.get_init_v_rev_confirm_menu(ticker)
-                await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
-                return
-
-            elif sub == "EXEC_CONFIRM":
-                await query.answer("⏳ 장부 재구성 중...")
-                async with self.tx_lock:
-                    _, holdings = self.broker.get_account_balance()
-                h = holdings.get(ticker, {'qty': 0, 'avg': 0})
-                qty = int(h['qty'])
-                avg = float(h['avg'])
-                
-                if qty > 0:
-                    new_q = [{
-                        "qty": qty,
-                        "price": avg,
-                        "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "type": "INIT_TRANSFERRED" 
-                    }]
-                    try:
-                        # MODIFIED: [V28.14 통이관 에러 완전 소각] 객체 의존성 철거 및 다이렉트 파일 I/O 이식
-                        q_file = "data/queue_ledger.json"
-                        all_q = {}
-                        if os.path.exists(q_file):
-                            try:
-                                with open(q_file, 'r', encoding='utf-8') as f:
-                                    all_q = json.load(f)
-                            except Exception:
-                                pass
-                                
-                        all_q[ticker] = new_q
-                        os.makedirs(os.path.dirname(q_file), exist_ok=True)
-                        with open(q_file, 'w', encoding='utf-8') as f:
-                            json.dump(all_q, f, ensure_ascii=False, indent=4)
-                            
-                        # 메모리 캐시 강제 리로드
-                        if getattr(self, 'queue_ledger', None) and hasattr(self.queue_ledger, '_load'):
-                            try:
-                                self.queue_ledger._load()
-                            except:
-                                pass
-                                
-                        await query.edit_message_text(f"✅ <b>[{ticker}] 자동 물량 이관 및 초기화 완료! KIS 원장과 동기화합니다.</b>\n\n<b>{qty}주</b>(평단 <b>${avg:.2f}</b>)의 단일 기초 블록으로 완벽히 재구성되었습니다.", parse_mode='HTML')
-                        
-                        if ticker not in self.sync_engine.sync_locks:
-                            self.sync_engine.sync_locks[ticker] = asyncio.Lock()
-                        if not self.sync_engine.sync_locks[ticker].locked():
-                            await self.sync_engine.process_auto_sync(ticker, query.message.chat_id, context, silent_ledger=False)
-                    except Exception as e:
-                        await query.edit_message_text(f"❌ 쓰기 오류 발생: {e}", parse_mode='HTML')
-                else:
-                    await query.edit_message_text(f"⚠️ <b>[{ticker}] 보유 물량이 없어 이관할 대상이 없습니다.</b>", parse_mode='HTML')
-
         elif action == "TICKER":
             self.cfg.set_active_tickers([sub] if sub != "ALL" else ["SOXL", "TQQQ"])
             await query.edit_message_text(f"✅ 운용 종목 변경: {sub}")

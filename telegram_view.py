@@ -22,6 +22,7 @@
 # 🚀 [V27.24 그랜드 수술] 도파민 폭발! GIF 애니메이션 렌더링을 위한 멀티 프레임 스티칭(Stitching) 코어 및 Fallback 엔진 탑재 완료
 # 🚨 [V27.25 UI 팩트 교정] 시작화면(/start) 스케줄러 타임라인 08:30 -> 10:00 KST 확정 정산 시간으로 시각적 동기화 완료
 # MODIFIED: [V28.04 개념 패치] 자동(자체 U-Curve 엔진)/수동(한투 알고리즘 위임) 모드 수수료 오해 텍스트 전면 교정 완료
+# MODIFIED: [V28.05 그랜드 수술] 거대 프랑켄슈타인 1층 생성(2700달러 손실) 원흉인 '물량 통이관(SET_INIT)' 버튼 및 하위 UI 전면 소각
 # ==========================================================
 import os
 import math
@@ -141,17 +142,6 @@ class TelegramView:
         ]
         return msg, InlineKeyboardMarkup(keyboard)
 
-    def get_init_v_rev_confirm_menu(self, ticker):
-        msg = f"⚙️ <b>[{ticker} 단일 지층 초기화 (INIT) 프로토콜]</b>\n\n"
-        msg += "현재 KIS 계좌에 보유 중인 물량과 평단가를 1개의 '기초 블록'으로 묶어 V-REV 큐(Queue)에 이관합니다.\n\n"
-        msg += "⚠️ <b>주의:</b> 기존에 분할 매수했던 LIFO 지층 기록은 사라지고 1개의 덩어리로 합쳐집니다. 전환 초기에만 사용하십시오.\n"
-        
-        keyboard = [
-            [InlineKeyboardButton("✅ 계좌 데이터 기반 통이관 실행", callback_data=f"SET_INIT:EXEC_CONFIRM:{ticker}")],
-            [InlineKeyboardButton("❌ 취소", callback_data="RESET:CANCEL")]
-        ]
-        return msg, InlineKeyboardMarkup(keyboard)
-
     def get_queue_management_menu(self, ticker, q_data):
         msg = f"🗄️ <b>[ {ticker} V-REV 지층 큐(Queue) 정밀 관리 ]</b>\n\n"
         
@@ -215,8 +205,7 @@ class TelegramView:
         msg = f"🚨 <b>[{ticker} 비상 수혈 최종 승인 대기]</b> 🚨\n\n"
         msg += f"가장 최근에 물린 로트(Lot) <b>{emergency_qty}주</b> (평단 <b>${emergency_price:.2f}</b>)를 KIS 서버로 즉각 시장가(MOC) 강제 매도 전송합니다.\n\n"
         msg += "⚠️ <b>포트폴리오 매니저 경고:</b>\n"
-        msg += "1. 이 작업은 즉각 격발되며 취소할 수 없습니다.\n"
-        msg += "2. 정규장/프리장 운영 시간에만 격발이 승인됩니다.\n"
+        msg += "1. 이 작업은 즉각 격발되며 취소할 수 정규장/프리장 운영 시간에만 격발이 승인됩니다.\n"
         msg += "3. 체결 즉시 해당 로트 기록은 큐(Queue)에서 영구 소각됩니다.\n"
         
         keyboard = [
@@ -327,7 +316,6 @@ class TelegramView:
                 body_msg += "💡 <b>원인 역산 추정:</b> 수동 매수로 수량이 급증했거나, '/seed' 시드머니 설정이 대폭 축소되었습니다.\n"
                 body_msg += "🛡️ <b>가동 조치:</b> 마이너스 호가 차단용 절대 하한선($0.01) 방어막 가동 중!\n\n"
 
-            # MODIFIED: 자체 엔진(자동) vs 한투 위임(수동) 개념 교정 텍스트 반영
             if v_mode == "V_REV":
                 v_mode_display = "V_REV 역추세(한투위임)" if is_manual_vwap else "V_REV 역추세(자체엔진)"
                 main_icon = "⚖️"
@@ -410,7 +398,6 @@ class TelegramView:
                             body_msg += f"🎯 상방 스나이퍼: ${sn_target:.2f} 이상 대기\n"
             elif v_mode == "V_REV":
                 body_msg += "⚖️ <b>역추세 LIFO 큐(Queue) 엔진 스탠바이</b>\n"
-                # MODIFIED: 수동 모드(한투위임) 시 스케줄 텍스트 교정
                 if is_manual_vwap:
                     body_msg += "⏱️ <b>VWAP 스케줄:</b> <b>(수동) 한투 앱에서 직접 알고리즘 장전 대기</b>\n"
                 else:
@@ -494,6 +481,7 @@ class TelegramView:
             final_msg += "⛔ 장마감/애프터마켓: 주문 불가"
             
         return final_msg, InlineKeyboardMarkup(keyboard) if keyboard else None
+
     def get_settlement_message(self, active_tickers, config, atr_data, dynamic_target_data=None):
         msg = "⚙️ <b>[ 현재 설정 및 복리 상태 ]</b>\n\n"
         keyboard = []
@@ -507,7 +495,6 @@ class TelegramView:
                 ver_display = "V_REV 역추세"
             else:
                 icon = "💎"
-                # MODIFIED: 수동 모드의 텍스트를 한투 알고리즘 위임 개념으로 변경
                 ver_display = "무매4 (VWAP/위임)" if is_manual_vwap else "무매4 (LOC)"
                 
             split_cnt = int(config.get_split_count(t))
@@ -523,11 +510,8 @@ class TelegramView:
                 msg += f"▫️ 자동복리: {comp_rate}%\n"
                 msg += "⚖️ <b>역추세(Reversion) 하이브리드 엔진 스탠바이:</b>\n"
                 msg += "▫️ 전일 종가 앵커 기준 LIFO 큐 교차 매매 대기 중\n\n"
-                row_init = [InlineKeyboardButton(f"🔌 {t} V-REV 큐 장부 초기화 (물량이관)", callback_data=f"SET_INIT:V_REV:{t}")]
-                keyboard.append(row_init)
             else:
                 msg += f"▫️ 분할: {split_cnt}회\n▫️ 목표: {target_pct}%\n▫️ 자동복리: {comp_rate}%\n"
-                # MODIFIED: 수동/자동 집행 방식 텍스트 팩트 교정
                 v14_mode_txt = "🖐️ 수동 위임 (한투 VWAP 알고리즘)" if is_manual_vwap else "📉 LOC 단일 타격 (초안정성)"
                 msg += f"▫️ 집행: <b>{v14_mode_txt}</b>\n\n"
                 
@@ -564,7 +548,6 @@ class TelegramView:
         return msg, InlineKeyboardMarkup(keyboard)
 
     def get_vrev_mode_selection_menu(self, ticker):
-        # MODIFIED: 수수료 오해 문구 영구 소각 및 봇 자체 엔진 vs 한투 자체 알고리즘 개념으로 렌더링 텍스트 전면 수술
         msg = f"⚠️ <b>[{ticker} 운용 방식 (알고리즘 주체) 선택]</b>\n\n"
         msg += "V-REV 전략의 장 마감 전 VWAP 집행 주체를 선택해 주십시오.\n"
         msg += "(※ 두 방식 모두 한국투자증권 매매 수수료는 동일하게 적용됩니다.)\n\n"
@@ -671,14 +654,12 @@ class TelegramView:
         IMG_H = 430 
         os.makedirs("data", exist_ok=True)
         
-        # 폰트 로드
         f_title = self._load_best_font(self.bold_font_paths, 65)
         f_p = self._load_best_font(self.bold_font_paths, 85)
         f_y = self._load_best_font(self.reg_font_paths, 40)
         f_b_val = self._load_best_font(self.bold_font_paths, 32)
         f_b_lbl = self._load_best_font(self.reg_font_paths, 22)
         
-        # 반복되는 텍스트 도장 찍기 내부 함수화 (DRY 원칙)
         def apply_overlay(img_canvas):
             draw = ImageDraw.Draw(img_canvas)
             y_title = IMG_H + 60
@@ -716,7 +697,6 @@ class TelegramView:
                 bg_res = bg_frame.resize((W, new_h), Image.Resampling.LANCZOS)
                 return bg_res.crop((0, (new_h - IMG_H) // 2, W, (new_h + IMG_H) // 2))
 
-        # 🚀 1순위: GIF 파일(움짤)이 존재할 경우 멀티 프레임 스티칭 처리
         if os.path.exists("background.gif"):
             try:
                 bg_gif = Image.open("background.gif")
@@ -726,25 +706,19 @@ class TelegramView:
                 frames = []
                 for frame in ImageSequence.Iterator(bg_gif):
                     frame_rgba = frame.convert("RGBA")
-                    # 배경이 되는 검은색 캔버스 신규 생성
                     canvas = Image.new('RGB', (W, H), color='#1E222D')
-                    # 프레임 이미지를 규격에 맞게 리사이징 & 크롭
                     bg_cropped = resize_and_crop(frame_rgba)
-                    # 캔버스 상단에 움짤 1개 프레임 부착
                     canvas.paste(bg_cropped.convert("RGB"), (0, 0))
-                    # 하단에 텍스트 데이터 오버레이(도장 찍기)
                     canvas = apply_overlay(canvas)
                     frames.append(canvas)
                 
                 fname = f"data/profit_{ticker}.gif"
                 if frames:
-                    # 30~50장의 프레임을 다시 하나의 애니메이션으로 압축 저장 (Save_all=True)
                     frames[0].save(fname, save_all=True, append_images=frames[1:], duration=duration, loop=loop)
                     return fname
             except Exception as e:
                 logging.error(f"🚨 GIF 렌더링 실패, PNG로 강제 폴백: {e}")
 
-        # 🛡️ 2순위: GIF가 없거나 렌더링 에러 발생 시 PNG 이미지로 폴백(Fallback) 처리
         img = Image.new('RGB', (W, H), color='#1E222D')
         try:
             if os.path.exists("background.png"):
