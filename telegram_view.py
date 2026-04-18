@@ -26,6 +26,7 @@
 # MODIFIED: [V28.17 UX 팩트 패치] V-REV 모드 시 불필요한 분할/목표 설정 버튼 렌더링 은폐 (디커플링 확보)
 # MODIFIED: [V28.21 UI 팩트 교정] 졸업 카드 및 장부 내 불필요한 시/분/초 시간 데이터를 100% 적출하여 가독성을 복구하고, 동시간 체결 내역을 일자별(Day)로 완벽히 병합하도록 렌더링 아키텍처 수술 완료
 # MODIFIED: [V28.22 스냅샷 렌더링 디커플링 수술] 졸업 카드 발급 버튼 생성 시 history_id를 수신하여 콜백 데이터에 각인(Lock-on)하도록 파라미터 및 버튼 렌더링 로직 교정 완료
+# MODIFIED: [V28.25 그랜드 수술] 수수료 설정 UI 버튼 및 동적 수수료율 상태 렌더링 파이프라인 개통 완료
 # ==========================================================
 import os
 import math
@@ -494,6 +495,9 @@ class TelegramView:
             ver = config.get_version(t)
             is_manual_vwap = getattr(config, 'get_manual_vwap_mode', lambda x: False)(t)
             
+            # MODIFIED: [V28.25] 동적 수수료율 스캔
+            fee_rate = getattr(config, 'get_fee', lambda x: 0.25)(t)
+            
             if ver == "V_REV":
                 icon = "⚖️"
                 ver_display = "V_REV 역추세"
@@ -512,10 +516,12 @@ class TelegramView:
                 msg += "▫️ 목표: [1층] 매수단가+0.6%\n"
                 msg += "              [상위층] 평단가+0.5% (디커플링)\n"
                 msg += f"▫️ 자동복리: {comp_rate}%\n"
+                msg += f"▫️ 증권사 수수료: <b>{fee_rate}%</b>\n"
                 msg += "⚖️ <b>역추세(Reversion) 하이브리드 엔진 스탠바이:</b>\n"
                 msg += "▫️ 전일 종가 앵커 기준 LIFO 큐 교차 매매 대기 중\n\n"
             else:
                 msg += f"▫️ 분할: {split_cnt}회\n▫️ 목표: {target_pct}%\n▫️ 자동복리: {comp_rate}%\n"
+                msg += f"▫️ 증권사 수수료: <b>{fee_rate}%</b>\n"
                 v14_mode_txt = "🖐️ 수동 위임 (한투 VWAP 알고리즘)" if is_manual_vwap else "📉 LOC 단일 타격 (초안정성)"
                 msg += f"▫️ 집행: <b>{v14_mode_txt}</b>\n\n"
                 
@@ -537,22 +543,29 @@ class TelegramView:
                 
                 keyboard.append([InlineKeyboardButton(avwap_txt, callback_data=avwap_cb)])
             
+            # MODIFIED: [V28.25] 수수료 설정 버튼(INPUT:FEE) 추가 배선 연결
             if ver == "V_REV":
                 row2 = [
-                    InlineKeyboardButton(f"💸 {t} 복리", callback_data=f"INPUT:COMPOUND:{t}")
+                    InlineKeyboardButton(f"💸 {t} 복리", callback_data=f"INPUT:COMPOUND:{t}"),
+                    InlineKeyboardButton(f"💳 {t} 수수료", callback_data=f"INPUT:FEE:{t}")
                 ]
+                keyboard.append(row2)
+                row3 = [
+                    InlineKeyboardButton(f"✂️ {t} 액면보정", callback_data=f"INPUT:STOCK_SPLIT:{t}")
+                ]
+                keyboard.append(row3)
             else:
                 row2 = [
                     InlineKeyboardButton(f"⚙️ {t} 분할", callback_data=f"INPUT:SPLIT:{t}"), 
                     InlineKeyboardButton(f"🎯 {t} 목표", callback_data=f"INPUT:TARGET:{t}"),
                     InlineKeyboardButton(f"💸 {t} 복리", callback_data=f"INPUT:COMPOUND:{t}")
                 ]
-            keyboard.append(row2)
-            
-            row3 = [
-                InlineKeyboardButton(f"✂️ {t} 액면보정", callback_data=f"INPUT:STOCK_SPLIT:{t}")
-            ]
-            keyboard.append(row3)
+                keyboard.append(row2)
+                row3 = [
+                    InlineKeyboardButton(f"✂️ {t} 액면보정", callback_data=f"INPUT:STOCK_SPLIT:{t}"),
+                    InlineKeyboardButton(f"💳 {t} 수수료", callback_data=f"INPUT:FEE:{t}")
+                ]
+                keyboard.append(row3)
             
         return msg, InlineKeyboardMarkup(keyboard)
 

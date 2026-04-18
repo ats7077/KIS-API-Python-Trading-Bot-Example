@@ -10,6 +10,7 @@
 # MODIFIED: [V28.22 스냅샷 렌더링 디커플링 수술] 졸업 카드 발급(HIST:IMG) 시 
 # 콜백 데이터에 고유 식별자(ID)가 존재할 경우 해당 과거 지층(History)을 
 # 100% 정밀 타격하여 렌더링하도록 팩트 라우팅 엔진 이식.
+# MODIFIED: [V28.25 그랜드 수술] 동적 수수료율 설정을 위한 INPUT:FEE 콜백 라우팅 분기 신설 완료.
 # ==========================================================
 import logging
 import datetime
@@ -316,8 +317,6 @@ class TelegramCallbacks:
                             
                     qty, avg, invested, sold = self.cfg.calculate_holdings(target['ticker'], safe_trades)
                     
-                    # 💡 향후 telegram_view.py 업데이트를 위한 파라미터 사전 배선
-                    # 현재는 에러 방지를 위해 기존 인자만 넘깁니다. (2단계 수술 시 뷰에서 hid를 받을 수 있게 됩니다)
                     try:
                         msg, markup = self.view.create_ledger_dashboard(target['ticker'], qty, avg, invested, sold, safe_trades, 0, 0, is_history=True, history_id=hid)
                     except TypeError:
@@ -329,7 +328,6 @@ class TelegramCallbacks:
             elif sub == "IMG":
                 ticker = data[2]
                 
-                # MODIFIED: [V28.22] 콜백 데이터에서 고유 ID(hid) 정밀 추출 및 타겟팅
                 target_id = int(data[3]) if len(data) > 3 else None
                 
                 hist_list = [h for h in self.cfg.get_history() if h['ticker'] == ticker]
@@ -343,7 +341,6 @@ class TelegramCallbacks:
                     target_hist = next((h for h in hist_list if h.get('id') == target_id), None)
                     
                 if not target_hist:
-                    # ID 매칭 실패 시 호환성을 위해 최신 기록 강제 폴백(Fallback)
                     target_hist = sorted(hist_list, key=lambda x: x.get('end_date', ''), reverse=True)[0]
                 
                 try:
@@ -692,6 +689,9 @@ class TelegramCallbacks:
                 ko_name = "자동 복리율(%)"
             elif sub == "STOCK_SPLIT":
                 ko_name = "액면 분할/병합 비율 (예: 10분할은 10, 10병합은 0.1)"
+            # NEW: [V28.25] 텔레그램 수수료 텍스트 입력 프롬프트 동적 출력
+            elif sub == "FEE":
+                ko_name = "증권사 수수료율(%)"
             else:
                 ko_name = "값"
             
