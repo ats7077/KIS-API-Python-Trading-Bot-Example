@@ -16,12 +16,14 @@
 # 🚨 [V27.05 그랜드 수술] API Reject 방어(소수점 덤핑 차단), ZeroDivision 방어 및 Safe Casting 완벽 이식
 # 🚨 [V27.15 코파일럿 합작] FD 누수 방어, 스냅샷 덮어쓰기 락온, 0달러 로트 배제 및 TypeError 런타임 붕괴 방어막 이식 완료
 # MODIFIED: [V28.08 그랜드 수술] 스냅샷 영구 박제에 따른 VWAP 디커플링 방어막 완벽 이식 (0주 새출발 타임 패러독스 영구 소각)
+# MODIFIED: [V28.19 타임존 락온] datetime.now()를 EST(미국 동부) 기준으로 강제 고정하여 KST 자정 경계 스냅샷 증발 버그 완벽 수술
 # ==========================================================
 import math
 import os
 import json
 import tempfile
 from datetime import datetime
+import pytz
 
 class ReversionStrategy:
     def __init__(self):
@@ -40,15 +42,15 @@ class ReversionStrategy:
         ]
 
     def _get_state_file(self, ticker):
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = datetime.now(pytz.timezone('US/Eastern')).strftime("%Y-%m-%d")
         return f"data/vwap_state_REV_{today_str}_{ticker}.json"
 
     def _get_snapshot_file(self, ticker):
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = datetime.now(pytz.timezone('US/Eastern')).strftime("%Y-%m-%d")
         return f"data/daily_snapshot_REV_{today_str}_{ticker}.json"
 
     def _load_state_if_needed(self, ticker):
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = datetime.now(pytz.timezone('US/Eastern')).strftime("%Y-%m-%d")
         if self.state_loaded.get(ticker) == today_str:
             return 
             
@@ -76,7 +78,7 @@ class ReversionStrategy:
         self.state_loaded[ticker] = today_str
 
     def _save_state(self, ticker):
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = datetime.now(pytz.timezone('US/Eastern')).strftime("%Y-%m-%d")
         state_file = self._get_state_file(ticker)
         data = {
             "date": today_str,
@@ -111,7 +113,7 @@ class ReversionStrategy:
         if os.path.exists(snap_file):
             return
             
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = datetime.now(pytz.timezone('US/Eastern')).strftime("%Y-%m-%d")
         data = {
             "date": today_str,
             "plan": plan_data
@@ -170,12 +172,8 @@ class ReversionStrategy:
         self._save_state(ticker)
 
     def get_dynamic_plan(self, ticker, curr_p, prev_c, current_weight, vwap_status, min_idx, alloc_cash, q_data, is_snapshot_mode=False):
-        # NEW: [min_idx 결측치 선제적 캐스팅 및 런타임 붕괴 방어]
         min_idx = int(min_idx) if min_idx is not None else -1
 
-        # MODIFIED: [스냅샷 영구 박제 및 VWAP 1분봉 디커플링]
-        # VWAP 슬라이싱 런타임(min_idx 0~29)일 때는 스냅샷을 반환하지 않고 실시간 잔차 연산 돌입.
-        # /sync 등 단순 조회(min_idx < 0) 시에만 스냅샷을 반환하여 기억상실(Amnesia) 하극상 엣지 케이스 영구 차단.
         if not is_snapshot_mode and min_idx < 0:
             cached_plan = self.load_daily_snapshot(ticker)
             if cached_plan:

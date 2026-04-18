@@ -15,6 +15,7 @@
 # 🚨 [V27.06 코파일럿 합작] VWAP 매도 제논의 역설(목표량 실시간 축소) 앵커링 수술 및 fsync 객체 무결성 강화
 # 🚨 [V27.17 핫픽스] 상태 저장 I/O 예외 침묵(Amnesia) 방어 및 고립된 임시 파일(FD) 누수 원천 차단
 # 🚨 [V27.22 그랜드 수술] 0주 새출발 시 VWAP 매수 실종(Ghost Town) 버그 원천 차단 (상한선 1.15배 팩트 주입)
+# MODIFIED: [V28.19 타임존 락온] datetime.now()를 EST(미국 동부) 기준으로 강제 고정하여 KST 자정 경계 스냅샷 증발 버그 완벽 수술
 # ==========================================================
 import math
 import logging
@@ -22,6 +23,7 @@ import os
 import json
 import tempfile
 from datetime import datetime
+import pytz
 
 class V14VwapStrategy:
     def __init__(self, config):
@@ -37,15 +39,15 @@ class V14VwapStrategy:
         ]
 
     def _get_state_file(self, ticker):
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = datetime.now(pytz.timezone('US/Eastern')).strftime("%Y-%m-%d")
         return f"data/vwap_state_V14_{today_str}_{ticker}.json"
 
     def _get_snapshot_file(self, ticker):
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = datetime.now(pytz.timezone('US/Eastern')).strftime("%Y-%m-%d")
         return f"data/daily_snapshot_V14VWAP_{today_str}_{ticker}.json"
 
     def _load_state_if_needed(self, ticker):
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = datetime.now(pytz.timezone('US/Eastern')).strftime("%Y-%m-%d")
         if self.state_loaded.get(ticker) == today_str:
             return 
             
@@ -71,7 +73,7 @@ class V14VwapStrategy:
         self.state_loaded[ticker] = today_str
 
     def _save_state(self, ticker):
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = datetime.now(pytz.timezone('US/Eastern')).strftime("%Y-%m-%d")
         state_file = self._get_state_file(ticker)
         data = {
             "date": today_str,
@@ -99,7 +101,7 @@ class V14VwapStrategy:
                 except OSError: pass
 
     def save_daily_snapshot(self, ticker, plan_data):
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = datetime.now(pytz.timezone('US/Eastern')).strftime("%Y-%m-%d")
         snap_file = self._get_snapshot_file(ticker)
         data = {
             "date": today_str,
@@ -176,7 +178,6 @@ class V14VwapStrategy:
         
         if qty == 0:
             p_buy = self._ceil(prev_close * 1.15)
-            # 🚨 [수술 완료] 0주 새출발 시 매수 상한선을 0.00 -> 1.15배로 주입하여 VWAP 엔진 매수 실종 방어
             buy_star_price = p_buy 
             
             q_buy = math.floor(dynamic_budget / p_buy) if p_buy > 0 else 0
@@ -202,7 +203,7 @@ class V14VwapStrategy:
         plan_result = {
             'core_orders': core_orders, 'bonus_orders': [], 'orders': core_orders,
             't_val': t_val, 'one_portion': dynamic_budget, 'star_price': star_price,
-            'buy_star_price': buy_star_price, # 0주 새출발일 경우 p_buy(1.15배)가 안전하게 저장됨
+            'buy_star_price': buy_star_price, 
             'star_ratio': star_ratio,
             'target_price': target_price, 'is_reverse': False,
             'process_status': process_status,
