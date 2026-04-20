@@ -1,14 +1,15 @@
 # ==========================================================
-# [scheduler_trade.py] - 🌟 100% 통합 무결점 완성본 (V28.35) 🌟
+# [scheduler_trade.py] - 🌟 100% 통합 무결점 완성본 (V28.36) 🌟
 # ⚠️ 이 주석 및 파일명 표기는 절대 지우지 마세요.
-# MODIFIED: [V28.18 V14 오리지널 스냅샷 저장 배선 개통]
-# NEW: [V28.21 스냅샷 소각 맹점 적출 및 디커플링 무결성 확보]
-# NEW: [V28.22 AI 환각 방어 백신 이식] VWAP 디커플링 로직에 AI 에이전트 오판 차단 경고 주석 하드코딩
-# NEW: [V28.28] 수동 매도(뇌동매매)로 인한 0주 락온 디커플링 상태(EC-1, EC-2) 감지 및 스나이퍼/VWAP 셧다운 방어막 추가
-# NEW: [V28.30] 애프터마켓 로터리 덫 휴장일 오발탄(False Fire) 엣지 케이스 원천 차단
-# NEW: [V28.31] 텔레그램 수동 제어(상방 스나이퍼 ON/OFF) 디커플링 해체 및 코어 엔진 통제망 이식
-# NEW: [V28.33] 코파일럿 아키텍처 채택: V14 오리지널 상방 스나이퍼 코어 엔진 100% 통합 이식
-# 🛠️ [V28.35 긴급 패치] VWAP/스나이퍼 잔고 스캔 시 API 리스트([]) 반환 에러('list' object has no attribute 'get') 완벽 방어막 전면 이식
+# MODIFIED: [V28.18] V14 오리지널 스냅샷 저장 배선 개통
+# NEW: [V28.21] 스냅샷 소각 맹점 적출 및 디커플링 무결성 확보
+# NEW: [V28.22] AI 환각 방어 백신 이식 (VWAP 디커플링 경고)
+# NEW: [V28.28] 수동 매도(뇌동매매)로 인한 0주 락온 디커플링 방어막
+# NEW: [V28.30] 애프터마켓 로터리 덫 휴장일 오발탄 원천 차단
+# NEW: [V28.31] 텔레그램 수동 제어 코어 통제망 이식
+# NEW: [V28.33] 코파일럿 아키텍처 채택: V14 상방 스나이퍼 100% 통합
+# 🛠️ [V28.35] VWAP/스나이퍼 잔고 스캔 리스트([]) 유입 타입 세이프 쉴드 이식
+# 🚀 [V28.36 API 병목 영구 적출] 승승장군 통찰 반영: 미체결 명단 소멸 시 '100% 전량 체결'로 즉시 간주하여 무거운 당일 체결 조회(get_execution_history) 통신 전면 삭제. 타임아웃 원천 차단!
 # ==========================================================
 import os
 import logging
@@ -80,14 +81,12 @@ async def scheduled_sniper_monitor(context):
             cash, holdings = await asyncio.to_thread(broker.get_account_balance)
             if holdings is None: return
             
-            # 🚨 [V28.35 수술] 타입 세이프 쉴드: 리스트 유입 시 즉각 딕셔너리로 치환
             safe_holdings = holdings if isinstance(holdings, dict) else {}
             avwap_free_cash = cash
             
             for t in cfg.get_active_tickers():
                 version = cfg.get_version(t)
                 
-                # NEW: 수동 매도로 인한 0주 락온 디커플링 감지 방어막
                 if version == "V_REV":
                     h = safe_holdings.get(t) or {}
                     actual_qty = int(float(h.get('qty', 0)))
@@ -223,8 +222,6 @@ async def scheduled_sniper_monitor(context):
                                  f"▫️ 전량 {actual_qty}주 → 매도가: ${bid_p:.2f}",
                             parse_mode='HTML'
                         )
-                    else:
-                        await context.bot.send_message(chat_id=chat_id, text=f"🚨 <b>[{t}] 잭팟 익절 실패:</b> {res.get('msg1')}", parse_mode='HTML')
                     continue
 
                 if day_high >= sniper_floor:
@@ -265,8 +262,6 @@ async def scheduled_sniper_monitor(context):
                                      f"▫️ 물량 {sell_qty}주 → 매도가: ${bid_p:.2f}",
                                 parse_mode='HTML'
                             )
-                        else:
-                            await context.bot.send_message(chat_id=chat_id, text=f"🚨 <b>[{t}] 쿼터 익절 실패:</b> {res.get('msg1')}", parse_mode='HTML')
 
     try:
         await asyncio.wait_for(_do_sniper(), timeout=45.0)
@@ -391,7 +386,6 @@ async def scheduled_vwap_trade(context):
             cash, holdings = await asyncio.to_thread(broker.get_account_balance)
             if holdings is None: return
             
-            # 🚨 [V28.35 수술] 타입 세이프 쉴드: 리스트 유입 시 즉각 딕셔너리로 치환
             safe_holdings = holdings if isinstance(holdings, dict) else {}
             
             for t in cfg.get_active_tickers():
@@ -431,7 +425,6 @@ async def scheduled_vwap_trade(context):
                         queue_ledger = app_data.get('queue_ledger')
                         if not strategy_rev or not queue_ledger: continue
                         
-                        # [V28.35] 안전한 딕셔너리에서 데이터 추출
                         h = safe_holdings.get(t) or {}
                         actual_qty = int(float(h.get('qty', 0)))
                         
@@ -524,14 +517,20 @@ async def scheduled_vwap_trade(context):
                                                 await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
                                                 vwap_cache[f"REV_{t}_sweep_msg_sent"] = True
                                             
+                                            # 🚀 [V28.36 수술] 스윕 중 체결 조회(get_execution_history) 제거, 미체결 소멸 시 전량 체결 간주
                                             ccld_qty = 0
                                             for _ in range(4):
                                                 await asyncio.sleep(2.0)
-                                                execs = await asyncio.to_thread(broker.get_execution_history, t, today_str, today_str)
-                                                my_execs = [ex for ex in execs if ex.get('odno') == odno]
-                                                if my_execs:
-                                                    ccld_qty = sum(int(float(ex.get('ft_ccld_qty') or 0)) for ex in my_execs)
-                                                    if ccld_qty >= actual_sweep_qty: break
+                                                unfilled_check = await asyncio.to_thread(broker.get_unfilled_orders_detail, t)
+                                                safe_unfilled = unfilled_check if isinstance(unfilled_check, list) else []
+                                                
+                                                my_order = next((ox for ox in safe_unfilled if ox.get('odno') == odno), None)
+                                                if my_order:
+                                                    ccld_qty = int(float(my_order.get('tot_ccld_qty') or 0))
+                                                else:
+                                                    # 미체결 리스트에 없다면 100% 체결 완료로 간주하고 즉시 루프 탈출
+                                                    ccld_qty = actual_sweep_qty
+                                                    break
                                             
                                             if ccld_qty < actual_sweep_qty:
                                                 try:
@@ -613,7 +612,6 @@ async def scheduled_vwap_trade(context):
                         target_orders = rev_plan.get('orders', [])
 
                     elif version == "V14":
-                        # [V28.35] 안전한 딕셔너리에서 데이터 추출
                         h = safe_holdings.get(t, {'qty':0, 'avg':0.0})
                         actual_qty = int(h.get('qty', 0))
                         actual_avg = float(h.get('avg', 0.0))
@@ -646,6 +644,7 @@ async def scheduled_vwap_trade(context):
                         odno = res.get('odno', '')
                         
                         if res.get('rt_cd') == '0' and odno:
+                            # 🚀 [V28.36 수술] 일반 VWAP 체결 스캔도 미체결 기반 추론으로 전면 교체
                             ccld_qty = 0
                             for _ in range(4):
                                 await asyncio.sleep(2.0)
@@ -655,13 +654,10 @@ async def scheduled_vwap_trade(context):
                                 my_order = next((ox for ox in safe_unfilled if ox.get('odno') == odno), None)
                                 if my_order:
                                     ccld_qty = int(float(my_order.get('tot_ccld_qty') or 0))
+                                else:
+                                    # 미체결 리스트에 없으면 100% 전량 체결!
+                                    ccld_qty = slice_qty
                                     break
-                                    
-                                execs = await asyncio.to_thread(broker.get_execution_history, t, today_str, today_str)
-                                my_execs = [ex for ex in execs if ex.get('odno') == odno]
-                                if my_execs:
-                                    ccld_qty = sum(int(float(ex.get('ft_ccld_qty') or 0)) for ex in my_execs)
-                                    if ccld_qty >= slice_qty: break
                                     
                             if ccld_qty < slice_qty:
                                 await asyncio.to_thread(broker.cancel_order, t, odno)
@@ -734,7 +730,6 @@ async def scheduled_regular_trade(context):
             if holdings is None:
                 return False, "❌ 계좌 정보를 불러오지 못했습니다."
             
-            # 🚨 [V28.35 수술] 타입 세이프 쉴드
             safe_holdings = holdings if isinstance(holdings, dict) else {}
 
             sorted_tickers, allocated_cash = get_budget_allocation(cash, cfg.get_active_tickers(), cfg)
@@ -990,7 +985,6 @@ async def scheduled_after_market_lottery(context):
             cash, holdings = await asyncio.to_thread(broker.get_account_balance)
             if holdings is None: return
             
-            # 🚨 [V28.35 수술] 타입 세이프 쉴드
             safe_holdings = holdings if isinstance(holdings, dict) else {}
 
             for t in cfg.get_active_tickers():
