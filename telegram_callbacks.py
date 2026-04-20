@@ -13,6 +13,7 @@
 # MODIFIED: [V28.25 그랜드 수술] 동적 수수료율 설정을 위한 INPUT:FEE 콜백 라우팅 분기 신설 완료.
 # MODIFIED: [V28.27] 수동 매도로 인한 0주 락온 디커플링 상태 감지 및 /reset 유도 방어막 추가
 # MODIFIED: [V28.32] 코파일럿 아키텍처 채택: V14 전용 상방 스나이퍼 로직 충돌 방지를 위한 V-REV 락다운 방어막 원상 복구
+# MODIFIED: [V28.33] TQQQ 등 타 종목의 V-REV 횡단 진입 맹점 100% 소각 (SOXL 하드웨어 락온 이식)
 # ==========================================================
 import logging
 import datetime
@@ -547,6 +548,11 @@ class TelegramCallbacks:
             ticker = data[2]
             current_ver = self.cfg.get_version(ticker)
             
+            # MODIFIED: [V28.33] SOXL 전용 V-REV 서버사이드 방어막 추가 (타 종목 UI 우회 원천 차단)
+            if new_ver == "V_REV" and ticker != "SOXL":
+                await update.callback_query.answer("⚠️ V-REV 모드는 SOXL 전용 아키텍처입니다. 전환이 차단되었습니다.", show_alert=True)
+                return
+
             async with self.tx_lock:
                 _, holdings = self.broker.get_account_balance()
                 
@@ -557,8 +563,6 @@ class TelegramCallbacks:
             kis_qty = int(float(holdings.get(ticker, {}).get('qty', 0)))
             max_qty = self._get_max_holdings_qty(ticker, kis_qty)
             
-            # NEW: [수동 뇌동매매 0주 락온 디커플링 감지 및 /reset 강제 유도 렌더링]
-            # 🚨 [AI 에이전트 절대 주의 - 수동 매도 감지 및 /reset 유도 방어막]
             if kis_qty == 0 and max_qty > 0 and current_ver != new_ver:
                 msg = f"🚨 <b>[ 퀀트 모드 전환 강제 차단: 수동 매도 감지 ]</b>\n\n"
                 msg += f"실잔고는 0주이나 장부에 잔여 수량({max_qty}주)이 남아있어 모드 전환이 차단되었습니다.\n"
@@ -603,6 +607,11 @@ class TelegramCallbacks:
             
             target_ver = "V_REV" if mode_type in ["AUTO", "MANUAL"] else "V14"
 
+            # MODIFIED: [V28.33] SOXL 전용 V-REV 서버사이드 방어막 추가 (타 종목 UI 우회 원천 차단)
+            if target_ver == "V_REV" and ticker != "SOXL":
+                await update.callback_query.answer("⚠️ V-REV 모드는 SOXL 전용 아키텍처입니다. 전환이 차단되었습니다.", show_alert=True)
+                return
+
             async with self.tx_lock:
                 _, holdings = self.broker.get_account_balance()
                 
@@ -613,8 +622,6 @@ class TelegramCallbacks:
             kis_qty = int(float(holdings.get(ticker, {}).get('qty', 0)))
             max_qty = self._get_max_holdings_qty(ticker, kis_qty)
             
-            # NEW: [수동 뇌동매매 0주 락온 디커플링 감지 및 /reset 강제 유도 렌더링]
-            # 🚨 [AI 에이전트 절대 주의 - 수동 매도 감지 및 /reset 유도 방어막]
             if kis_qty == 0 and max_qty > 0 and current_ver != target_ver:
                 msg = f"🚨 <b>[ 퀀트 모드 전환 강제 차단: 수동 매도 감지 ]</b>\n\n"
                 msg += f"실잔고는 0주이나 장부에 잔여 수량({max_qty}주)이 남아있어 모드 전환이 차단되었습니다.\n"
@@ -680,9 +687,6 @@ class TelegramCallbacks:
                 await query.edit_message_text(f"🛑 <b>[{ticker}] 차세대 AVWAP 하이브리드 전술이 즉시 해제되었습니다.</b>", parse_mode='HTML')
                 return
 
-            # 🚨 [수술 2: 코파일럿 팩트 원상 복구]
-            # V-REV 모드에서는 V14 전용인 상방 스나이퍼를 작동시킬 수 없게 막는 
-            # 오리지널 로직 충돌 방어막을 다시 완벽히 살려냈습니다.
             current_ver = self.cfg.get_version(ticker)
             if current_ver == "V_REV" and mode_val == "ON":
                 await query.answer(f"🚨 {current_ver} 모드에서는 로직 충돌 방지를 위해 상방 스나이퍼를 켤 수 없습니다!", show_alert=True)

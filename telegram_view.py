@@ -27,6 +27,7 @@
 # MODIFIED: [V28.21 UI 팩트 교정] 졸업 카드 및 장부 내 불필요한 시/분/초 시간 데이터를 100% 적출하여 가독성을 복구하고, 동시간 체결 내역을 일자별(Day)로 완벽히 병합하도록 렌더링 아키텍처 수술 완료
 # MODIFIED: [V28.22 스냅샷 렌더링 디커플링 수술] 졸업 카드 발급 버튼 생성 시 history_id를 수신하여 콜백 데이터에 각인(Lock-on)하도록 파라미터 및 버튼 렌더링 로직 교정 완료
 # MODIFIED: [V28.25 그랜드 수술] 수수료 설정 UI 버튼 및 동적 수수료율 상태 렌더링 파이프라인 개통 완료
+# MODIFIED: [V28.29 그랜드 수술] TQQQ V-REV 렌더링 맹점 차단 (SOXL 전용 락온 이식)
 # ==========================================================
 import os
 import math
@@ -156,7 +157,7 @@ class TelegramView:
         msg += f"▫️ 총 보유 로트(Lot) : {len(q_data)} 개 층\n"
         msg += f"▫️ 총 장전 수량 : {total_q} 주\n"
         msg += f"▫️ 큐 통합 평단가 : ${avg_p:.2f}\n\n"
-        msg += "<b>[ LIFO 층별 상세 (최근 매수 순) ]</b>\n"
+        msg += "<b>[ LIFO 층별 상세 (최근 매 매수 순) ]</b>\n"
         msg += "<code>No. 일자        수량   평단가\n"
         msg += "-"*30 + "\n"
         
@@ -226,7 +227,7 @@ class TelegramView:
         msg += "⚠️ <b>[ 파괴적 제약 사항 ]</b>\n"
         msg += "1. 기존 V14의 상방 스나이퍼 기능은 즉시 영구 셧다운됩니다.\n"
         msg += "2. 당일 -1% 하드스탑(손절) 또는 +1% 스퀴즈(익절) 또는 15:55 타임스탑 강제 덤핑이 적용됩니다.\n"
-        msg += "3. V-REV 큐(Queue)와는 물량과 평단가가 100% 분리되어 시스템 메모 단독으로 연산됩니다.\n\n"
+        msg += "3. V-REV 큐(Queue)와는 물량과 평단가가 100% 분리되어 시스템 메모리 단독으로 연산됩니다.\n\n"
         msg += "포트폴리오 매니저의 최종 승인을 대기합니다."
         
         keyboard = [
@@ -525,10 +526,16 @@ class TelegramView:
                 v14_mode_txt = "🖐️ 수동 위임 (한투 VWAP 알고리즘)" if is_manual_vwap else "📉 LOC 단일 타격 (초안정성)"
                 msg += f"▫️ 집행: <b>{v14_mode_txt}</b>\n\n"
                 
-            row1 = [
-                InlineKeyboardButton("💎 V14 (무매4)", callback_data=f"SET_VER:V14:{t}"),
-                InlineKeyboardButton("⚖️ V-REV (역추세)", callback_data=f"SET_VER:V_REV:{t}")
-            ]
+            # MODIFIED: [V28.29 그랜드 수술] TQQQ V-REV 렌더링 맹점 차단 (SOXL 전용 락온 이식)
+            if t == "SOXL":
+                row1 = [
+                    InlineKeyboardButton("💎 V14 (무매4)", callback_data=f"SET_VER:V14:{t}"),
+                    InlineKeyboardButton("⚖️ V-REV (역추세)", callback_data=f"SET_VER:V_REV:{t}")
+                ]
+            else:
+                row1 = [
+                    InlineKeyboardButton("💎 V14 (무매4)", callback_data=f"SET_VER:V14:{t}")
+                ]
             keyboard.append(row1)
 
             if ver == "V_REV":
@@ -770,3 +777,4 @@ class TelegramView:
             [InlineKeyboardButton("💎 SOXL + TQQQ 통합", callback_data="TICKER:ALL")]
         ]
         return f"🔄 <b>[ 운용 종목 선택 ]</b>\n현재: <b>{', '.join(current_tickers)}</b>", InlineKeyboardMarkup(keyboard)
+
