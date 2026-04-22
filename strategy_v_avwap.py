@@ -9,6 +9,7 @@
 # 🚨 [V27.06 긴급 수술] NameError (#ffffff) 소각 및 ZeroDivision 방어막 구축
 # 🚨 [V27.07 그랜드 수술] 코파일럿 합작 - 20MA NaN 붕괴, VWAP 침묵, 10시 누수, 소수점 주문 4대 맹점 전면 철거
 # 🚨 [V27.16 핫픽스] 20MA 시차 왜곡 차단, RVOL 정수 파싱, 소수점 매도 차단 및 ZeroDivision 영구 차단 완비
+# 🚨 [V29.03 팩트 수술] 기억상실(Amnesia) 엣지 케이스 방어막: 서버 재부팅 시 AVWAP 상태(매수/셧다운)가 증발하는 현상을 원천 차단하기 위해 파일 기반 영속성 저장(Persistence) 엔진 탑재.
 # ==========================================================
 import logging
 import datetime
@@ -16,6 +17,9 @@ import pytz
 import math
 import yfinance as yf
 import pandas as pd
+import json
+import os
+import tempfile
 
 class VAvwapHybridPlugin:
     def __init__(self):
@@ -25,6 +29,41 @@ class VAvwapHybridPlugin:
         self.base_target_pct = 0.01     
         self.base_dip_buy_pct = 0.0067  
         
+    # ==========================================================
+    # 🚨 [V29.03 NEW] AVWAP 상태 영속성(Persistence) 듀얼 캐시 엔진
+    # 서버 다운, 데몬 재시작 등에도 암살자가 타점과 셧다운 여부를 기억하도록 박제
+    # ==========================================================
+    def _get_state_file(self, ticker, now_est):
+        today_str = now_est.strftime('%Y%m%d')
+        return f"data/avwap_state_{today_str}_{ticker}.json"
+
+    def load_state(self, ticker, now_est):
+        file_path = self._get_state_file(ticker, now_est)
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+
+    def save_state(self, ticker, now_est, state_data):
+        file_path = self._get_state_file(ticker, now_est)
+        try:
+            dir_name = os.path.dirname(file_path)
+            if dir_name and not os.path.exists(dir_name):
+                os.makedirs(dir_name, exist_ok=True)
+            
+            # 원자적(Atomic) 쓰기로 파일 깨짐 원천 차단
+            fd, temp_path = tempfile.mkstemp(dir=dir_name, text=True)
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(state_data, f, ensure_ascii=False, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, file_path)
+        except Exception as e:
+            logging.error(f"🚨 [V_AVWAP] 상태 저장 실패: {e}")
+
     def fetch_macro_context(self, base_ticker):
         try:
             tkr = yf.Ticker(base_ticker)

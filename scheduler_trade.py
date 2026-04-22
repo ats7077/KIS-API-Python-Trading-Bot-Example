@@ -1,5 +1,5 @@
 # ==========================================================
-# [scheduler_trade.py] - 🌟 100% 통합 무결점 완성본 (V28.51) 🌟
+# [scheduler_trade.py] - 🌟 100% 통합 무결점 완성본 (V29.03) 🌟
 # ⚠️ 이 주석 및 파일명 표기는 절대 지우지 마세요.
 # MODIFIED: [V28.18] V14 오리지널 스냅샷 저장 배선 개통
 # NEW: [V28.21] 스냅샷 소각 맹점 적출 및 디커플링 무결성 확보
@@ -10,6 +10,7 @@
 # MODIFIED: [V28.41] U_CURVE_WEIGHTS 배열 합산 불일치(0.9596)로 인한 예산 누수 버그 완벽 수술 (합산 1.0 멱등성 동기화)
 # 🚨 [V28.50 NEW] AVWAP 조기퇴근 모드(Early Exit) 파이프라인 배선 개통 및 타겟 수익률 팩트 캐스팅
 # 🚨 [V28.51 팩트 수술] 정규장 스케줄러 통신 지연(가짜 에러) 진단망 이식: 재시도 루프 시 첫 실패 사유(fail_reason 및 예외 타입)를 텔레그램으로 즉시 타전하여 원격 진단 100% 개통.
+# 🚨 [V29.03 팩트 수술] AVWAP 영속성(Persistence) 듀얼 캐시 동기화 이식 완료: GCP 서버 재부팅(Amnesia) 시 json 파일에서 과거 상태를 자가 복구(Self-Healing)하고 팩트 매매를 즉시 재개하는 파이프라인 완벽 개통.
 # ==========================================================
 import os
 import logging
@@ -87,7 +88,6 @@ async def scheduled_sniper_monitor(context):
             for t in cfg.get_active_tickers():
                 version = cfg.get_version(t)
                 
-                # NEW: 수동 매도로 인한 0주 락온 디커플링 감지 방어막
                 if version == "V_REV":
                     h = safe_holdings.get(t) or {}
                     actual_qty = int(float(h.get('qty', 0)))
@@ -97,7 +97,6 @@ async def scheduled_sniper_monitor(context):
                         total_q = sum(item.get("qty", 0) for item in q_data)
                         
                         if actual_qty == 0 and total_q > 0:
-                            # 🛡️ MODIFIED: [V28.37] 스윕 피니셔 정상 발화 후 0주가 된 경우 오발탄 차단
                             _vwap_cache_ref = app_data.get('vwap_cache', {})
                             if _vwap_cache_ref.get(f"REV_{t}_sweep_msg_sent"):
                                 continue
@@ -115,6 +114,20 @@ async def scheduled_sniper_monitor(context):
                 
                 if version == "V_REV":
                     if not cfg.get_avwap_hybrid_mode(t): continue
+                    
+                    # 🚨 [V29.03 수술 부위] 기억상실(Amnesia) 복구 로직 이식
+                    if not tracking_cache.get(f"AVWAP_INIT_{t}"):
+                        try:
+                            saved_state = strategy.v_avwap_plugin.load_state(t, now_est)
+                            if saved_state:
+                                tracking_cache[f"AVWAP_BOUGHT_{t}"] = saved_state.get('bought', False)
+                                tracking_cache[f"AVWAP_SHUTDOWN_{t}"] = saved_state.get('shutdown', False)
+                                tracking_cache[f"AVWAP_QTY_{t}"] = saved_state.get('qty', 0)
+                                tracking_cache[f"AVWAP_AVG_{t}"] = saved_state.get('avg_price', 0.0)
+                        except Exception as e:
+                            logging.error(f"AVWAP 상태 복구 실패: {e}")
+                        tracking_cache[f"AVWAP_INIT_{t}"] = True
+                        
                     if tracking_cache.get(f"AVWAP_SHUTDOWN_{t}"): continue
                     
                     target_base = base_map.get(t, t)
@@ -140,7 +153,6 @@ async def scheduled_sniper_monitor(context):
                     try: df_1min_base = await asyncio.to_thread(broker.get_1min_candles_df, target_base)
                     except: pass
                     
-                    # 🚨 [V28.50 NEW] 조기 퇴근 설정 스캔 및 코어 파라미터 팩트 캐스팅
                     early_exit_mode = cfg.get_avwap_early_exit_mode(t)
                     early_target_profit = cfg.get_avwap_early_target(t) / 100.0
                     
@@ -153,6 +165,15 @@ async def scheduled_sniper_monitor(context):
                     
                     if action == 'SHUTDOWN':
                         tracking_cache[f"AVWAP_SHUTDOWN_{t}"] = True
+                        
+                        # 🚨 [상태 파일 저장]
+                        strategy.v_avwap_plugin.save_state(t, now_est, {
+                            'shutdown': True,
+                            'bought': tracking_cache.get(f"AVWAP_BOUGHT_{t}", False),
+                            'qty': avwap_qty,
+                            'avg_price': avwap_avg
+                        })
+                        
                         await context.bot.send_message(chat_id=chat_id, text=f"🛑 <b>[{t}] 하이브리드 AVWAP 당일 작전 종료</b>\n▫️ 사유: {reason}", parse_mode='HTML')
                         
                     elif action == 'BUY' and not tracking_cache.get(f"AVWAP_BOUGHT_{t}"):
@@ -162,6 +183,15 @@ async def scheduled_sniper_monitor(context):
                             res = broker.send_order(t, "BUY", b_qty, ask_p, "LIMIT")
                             if res.get('rt_cd') == '0':
                                 tracking_cache[f"AVWAP_BOUGHT_{t}"], tracking_cache[f"AVWAP_QTY_{t}"], tracking_cache[f"AVWAP_AVG_{t}"] = True, b_qty, ask_p
+                                
+                                # 🚨 [상태 파일 저장]
+                                strategy.v_avwap_plugin.save_state(t, now_est, {
+                                    'shutdown': tracking_cache.get(f"AVWAP_SHUTDOWN_{t}", False),
+                                    'bought': True,
+                                    'qty': b_qty,
+                                    'avg_price': ask_p
+                                })
+                                
                                 committed = b_qty * ask_p
                                 avwap_free_cash = max(0.0, avwap_free_cash - committed)
                                 
@@ -173,7 +203,14 @@ async def scheduled_sniper_monitor(context):
                         if res.get('rt_cd') == '0':
                             tracking_cache[f"AVWAP_SHUTDOWN_{t}"], tracking_cache[f"AVWAP_QTY_{t}"], tracking_cache[f"AVWAP_AVG_{t}"] = True, 0, 0.0
                             
-                            # MODIFIED: 조기퇴근 알림과 일반 스퀴즈 알림 분리
+                            # 🚨 [상태 파일 저장]
+                            strategy.v_avwap_plugin.save_state(t, now_est, {
+                                'shutdown': True,
+                                'bought': tracking_cache.get(f"AVWAP_BOUGHT_{t}", False),
+                                'qty': 0,
+                                'avg_price': 0.0
+                            })
+                            
                             if 'EARLY_PROFIT_TAKE' in reason:
                                 await context.bot.send_message(chat_id=chat_id, text=f"🏃‍♂️ <b>[{t}] 하이브리드 AVWAP 조기 퇴근 완료!</b>\n▫️ 설정된 타겟 수익률 달성으로 전량 시장가 덤핑 후 매매를 종료합니다. 🏆", parse_mode='HTML')
                             else:
@@ -385,7 +422,6 @@ async def scheduled_vwap_trade(context):
         vwap_cache.clear()
         vwap_cache['date'] = today_str
 
-    # MODIFIED: [V28.41] U_CURVE_WEIGHTS 배열 합산 불일치(0.9596)로 인한 예산 누수 버그 완벽 수술 (합산 1.0 멱등성 동기화)
     U_CURVE_WEIGHTS = [
         0.0308, 0.0220, 0.0190, 0.0228, 0.0179, 0.0191, 0.0199, 0.0190, 0.0187, 0.0213,
         0.0216, 0.0234, 0.0231, 0.0210, 0.0205, 0.0252, 0.0225, 0.0228, 0.0238, 0.0229,
@@ -449,7 +485,6 @@ async def scheduled_vwap_trade(context):
                         total_q = sum(item.get("qty", 0) for item in q_data)
                         
                         if actual_qty == 0 and total_q > 0:
-                            # 🛡️ MODIFIED: [V28.37] 스윕 피니셔 정상 발화 후 0주가 된 경우 오발탄 차단
                             if vwap_cache.get(f"REV_{t}_sweep_msg_sent"):
                                 continue
                                 
@@ -560,7 +595,6 @@ async def scheduled_vwap_trade(context):
                                                     
                                             if ccld_qty > 0:
                                                 strategy_rev.record_execution(t, "SELL", ccld_qty, exec_price)
-                                                # MODIFIED: [V28.37 pending_grad 마커] pop_lots 전 큐 스냅샷 보존
                                                 q_snap_before_pop = list(q_data)
                                                 queue_ledger.pop_lots(t, ccld_qty)
                                                 remaining_after_pop = queue_ledger.get_queue(t)
@@ -911,8 +945,6 @@ async def scheduled_regular_trade(context):
                         if is_success and o['side'] == 'SELL':
                             sell_success_count += 1
                             
-                        # MODIFIED: [V28.38 f-string 런타임 붕괴 방어막] 
-                        # 파이썬 3.12 이하 f-string 따옴표 겹침 및 백슬래시 문법 에러 원천 차단
                         err_msg = res.get('msg1', '오류')
                         status_icon = '✅' if is_success else f'❌({err_msg})'
                         msgs[t] += f"└ {o['desc']} {o['qty']}주 (${o['price']}): {status_icon}\n"
@@ -958,7 +990,6 @@ async def scheduled_regular_trade(context):
                     res = broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
                     if res.get('rt_cd') != '0': all_success_map[t] = False
                     
-                    # MODIFIED: [V28.38 f-string 런타임 붕괴 방어막]
                     err_msg = res.get('msg1', '오류')
                     status_icon = '✅' if res.get('rt_cd') == '0' else f'❌({err_msg})'
                     msgs[t] += f"└ 1차 필수: {o['desc']} {o['qty']}주: {status_icon}\n"
@@ -992,7 +1023,6 @@ async def scheduled_regular_trade(context):
 
             return True, "SUCCESS"
 
-    # 🚨 [V28.51 팩트 수술] 정규장 스케줄러 재시도 루프 진단망 이식 완료
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             success, fail_reason = await asyncio.wait_for(_do_regular_trade(), timeout=300.0)

@@ -9,6 +9,7 @@
 # 🚀 [V26.07 확정 순수익 렌더링 패치] V-REV 메모리 스냅샷 수수료(0.5%) 완벽 차감 이식
 # MODIFIED: [V28.25 그랜드 수술] V-REV 메모리 스냅샷에 동적 수수료 팩트 역산 엔진 이식 완료
 # 🚨 [V28.51 팩트 수술] 정규장 스케줄러 TypeError 붕괴 및 AVWAP 스나이퍼 크래시 원천 차단 (파라미터 디커플링 파이프라인 100% 개통)
+# 🚨 [V29.03 팩트 수술] AVWAP 기억상실 방어막: 영속성 캐시(Persistence) 데이터가 스케줄러와 플러그인 사이를 안전하게 오가도록 캡슐화 라우팅 배선 개통 완료.
 # ==========================================================
 import logging
 import pandas as pd
@@ -134,6 +135,18 @@ class InfiniteStrategy:
             "realized_pnl_pct": realized_pnl_pct,
             "captured_at": pd.Timestamp.now(tz='Asia/Seoul')
         }
+
+    # ==========================================================
+    # 🚨 [V29.03 NEW] AVWAP 데이터 영속성 캡슐화 라우팅
+    # ==========================================================
+    def load_avwap_state(self, ticker, now_est):
+        if hasattr(self.v_avwap_plugin, 'load_state'):
+            return self.v_avwap_plugin.load_state(ticker, now_est)
+        return {}
+
+    def save_avwap_state(self, ticker, now_est, state_data):
+        if hasattr(self.v_avwap_plugin, 'save_state'):
+            self.v_avwap_plugin.save_state(ticker, now_est, state_data)
 
     def fetch_avwap_macro(self, base_ticker):
         return self.v_avwap_plugin.fetch_macro_context(base_ticker)
