@@ -18,6 +18,7 @@
 # 영구 점유하던 치명적 버그를 asyncio.to_thread() 래핑으로 완벽 교정.
 # NEW: [V28.31] 하단 고정 키보드 한글 신호 무응답 맹점 완벽 수술 (라우팅 복구)
 # 🚨 [V28.50 NEW] AVWAP 암살자 전용 '조기퇴근/타겟설정' 독립 UI 라우터 개통
+# 🚨 [V29.04 MODIFIED] UI 렌더링 파편화 수술: /history 명령어(cmd_history)의 구형 출력을 최신형 콜백 UI(HIST:LIST)와 100% 동일하게 통일화 완료.
 # ==========================================================
 import logging
 import datetime
@@ -538,7 +539,7 @@ class TelegramController:
                 if is_manual_vwap:
                     v_rev_guidance += "\n\n🚨 <b>[ ⛔ 치명적 경고: 수동 VWAP 설정 ]</b> 🚨\n"
                     v_rev_guidance += "한투 앱(V앱)에서 수동 주문을 거실 때, <b>절대로 '하루 종일'로 설정하지 마십시오!</b>\n"
-                    v_rev_guidance += "작동 시간은 반드시 \n<b>[장 마감 30분 전 ~ 장 마감]</b>\n으로만 세팅하셔야 합니다.\n"
+                    v_rev_guidance += "작 작동 시간은 반드시 \n<b>[장 마감 30분 전 ~ 장 마감]</b>\n으로만 세팅하셔야 합니다.\n"
                     v_rev_guidance += "장중 내내 작동하게 둘 경우 V-REV 코어 전략의 수익률이 심각하게 파괴됩니다."
 
                 if hasattr(self.cfg, 'get_avwap_hybrid_mode') and self.cfg.get_avwap_hybrid_mode(t):
@@ -615,17 +616,40 @@ class TelegramController:
         else:
             await status_msg.edit_text("✅ <b>동기화 완료</b> (표시할 진행 중인 장부가 없거나 에러 대기 중입니다)", parse_mode='HTML')
 
-    async def cmd_history(self, update, context):
+    # 🟢 [수술 완료] cmd_history를 콜백과 완전히 동일한 UI 렌더링으로 통일화
+    async def cmd_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_admin(update):
             return
             
-        history = self.cfg.get_history()
-        if not history:
-            await update.message.reply_text("📜 저장된 역사가 없습니다.")
+        try:
+            history_data = self.cfg.get_history()
+        except Exception:
+            history_data = []
+            
+        if not history_data:
+            await update.message.reply_text("📭 <b>명예의 전당 (졸업 기록)이 비어있습니다.</b>", parse_mode='HTML')
             return
             
-        msg = "🏆 <b>[ 졸업 명예의 전당 ]</b>\n"
-        keyboard = [[InlineKeyboardButton(f"{h['end_date']} | {h['ticker']} (+${h['profit']:.0f})", callback_data=f"HIST:VIEW:{h['id']}")] for h in history]
+        # 최신순(end_date 기준 내림차순) 정렬
+        sorted_hist = sorted(history_data, key=lambda x: x.get('end_date', ''), reverse=True)
+        
+        msg = "🏆 <b>[ 명예의 전당 (과거 졸업 기록) ]</b>\n\n"
+        msg += "상세 내역을 조회할 기록을 선택하세요.\n"
+        
+        keyboard = []
+        
+        # 최근 기록 최대 15개 버튼 동적 생성
+        for h in sorted_hist[:15]: 
+            t = h.get('ticker', 'UNK')
+            p = h.get('profit', 0.0)
+            date_str = h.get('end_date', '')[:10].replace("-", ".")
+            sign = "+" if p >= 0 else "-"
+            
+            btn_text = f"🏅 {date_str} [{t}] {sign}${abs(p):.2f}"
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"HIST:VIEW:{h['id']}")])
+            
+        keyboard.append([InlineKeyboardButton("❌ 닫기", callback_data="RESET:CANCEL")])
+        
         await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
 
     async def cmd_mode(self, update, context):
