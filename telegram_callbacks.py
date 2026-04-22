@@ -15,7 +15,8 @@
 # MODIFIED: [V28.32] 코파일럿 아키텍처 채택: V14 전용 상방 스나이퍼 로직 충돌 방지를 위한 V-REV 락다운 방어막 원상 복구
 # MODIFIED: [V28.33] TQQQ 등 타 종목의 V-REV 횡단 진입 맹점 100% 소각 (SOXL 하드웨어 락온 이식)
 # MODIFIED: [V29.00 NEW] AVWAP 조기 퇴근 모드 동적 렌더링 및 팝업 안내 UX 팩트 수술 완료
-# 🚨 [V29.02 UX 팩트 패치] "역사 목록으로 돌아가기(HIST:LIST)" 콜백 시 cmd_history 호출에 따른 런타임 즉사 맹점 소각. 동적 리스트 렌더링 엔진(edit_message_text) 단독 이식 완료.
+# 🚨 [V29.02 UX 팩트 패치] "역사 목록으로 돌아가기(HIST:LIST)" 콜백 시 cmd_history 호출에 따른 런타임 즉사 맹점 소각. 동적 리스트 렌더링 엔진 단독 이식 완료.
+# 🚨 [V29.03 핫픽스] UnboundLocalError 런타임 즉사 유발 원흉(AVWAP 내부 로컬 임포트 섀도잉) 100% 소각 완료.
 # ==========================================================
 import logging
 import datetime
@@ -308,9 +309,6 @@ class TelegramCallbacks:
                             _, holdings = self.broker.get_account_balance()
                         await self.sync_engine._display_ledger(ticker, update.effective_chat.id, context, message_obj=query.message, pre_fetched_holdings=holdings)
 
-        # ==========================================================
-        # 🚨 [V29.02 핵심 수술] HIST:LIST 콜백 런타임 즉사 방어막 이식
-        # ==========================================================
         elif action == "HIST":
             if sub == "VIEW":
                 hid = int(data[2])
@@ -332,7 +330,6 @@ class TelegramCallbacks:
                         
                     await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
             
-            # 🟢 [수술 완료] 엉뚱한 컨트롤러 호출 걷어내고, 현재 텍스트 창을 리스트로 예쁘게 동적 렌더링!
             elif sub == "LIST":
                 try:
                     history_data = self.cfg.get_history()
@@ -343,14 +340,12 @@ class TelegramCallbacks:
                     await query.edit_message_text("📭 <b>명예의 전당 (졸업 기록)이 비어있습니다.</b>", parse_mode='HTML')
                     return
                 
-                # 최신순(end_date 기준 내림차순) 정렬
                 sorted_hist = sorted(history_data, key=lambda x: x.get('end_date', ''), reverse=True)
                 
                 msg = "🏆 <b>[ 명예의 전당 (과거 졸업 기록) ]</b>\n\n"
                 msg += "상세 내역을 조회할 기록을 선택하세요.\n"
                 keyboard = []
                 
-                # 최근 기록 최대 15개 버튼 동적 생성
                 for h in sorted_hist[:15]: 
                     t = h.get('ticker', 'UNK')
                     p = h.get('profit', 0.0)
@@ -704,7 +699,7 @@ class TelegramCallbacks:
         # 🚨 [V29.00 NEW] 암살자 전용 조기퇴근 콜백 라우터 및 동적 콘솔 렌더링
         elif action == "AVWAP":
             if sub in ["MENU", "EARLY"]:
-                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                # 🚨 [V29.03] 로컬 스코프 섀도잉 문제 해결: 이 줄의 임포트가 전체 함수 범위를 덮어쓰던 에러를 제거했습니다!
                 
                 ticker = data[2] if sub == "MENU" else data[3]
                 
