@@ -1,5 +1,5 @@
 # ==========================================================
-# [scheduler_trade.py] - 🌟 100% 통합 전투 사령부 (V29.14) 🌟
+# [scheduler_trade.py] - 🌟 100% 통합 전투 사령부 (V29.15) 🌟
 # ⚠️ 이 주석 및 파일명 표기는 절대 지우지 마세요.
 # 🚨 [V27.13 그랜드 수술] 코파일럿 합작 5대 엣지 케이스 완벽 수술 완료
 # 🚀 [V28.01 그랜드 수술] 서머타임 데드락 방어 윈도우 65분 확장, 결측치 락온 차단, tx_lock 런타임 붕괴 가드 완비
@@ -22,6 +22,7 @@
 # MODIFIED: [V29.12 핫픽스] 스나이퍼 모니터링 AttributeError(get_master_switch) Safe Casting 방어막 이식
 # MODIFIED: [V29.13 핫픽스] 스나이퍼 모니터링 이중 락(Nested tx_lock) 데드락 붕괴 현상 원천 적출 완료
 # MODIFIED: [V29.14 핫픽스] InfiniteStrategy check_sniper_condition 모듈 누락(AttributeError) Safe Bypass 방어막 이식
+# MODIFIED: [V29.15 핫픽스] AVWAP 데이터 기아(Data Starvation) 원천 차단 및 필수 파라미터 배선 개통
 # ==========================================================
 import logging
 import datetime
@@ -176,15 +177,21 @@ async def scheduled_sniper_monitor(context):
                     early_exit_mode = cfg.get_avwap_early_exit_mode(t)
                     early_target_profit = cfg.get_avwap_early_target(t) / 100.0
                     
-                    # MODIFIED: [V29.11 핫픽스] AVWAP 엔진 get_decision() 매개변수 불일치(TypeError) 팩트 교정 완료
+                    # 🚨 [V29.15 핫픽스] AVWAP 데이터 기아(Data Starvation) 원천 차단 및 필수 파라미터 배선 개통
                     decision = strategy.v_avwap_plugin.get_decision(
-                        base_df=df_1min_base,
-                        target_df=None,
+                        base_ticker=target_base,
+                        exec_ticker=t,
+                        base_curr_p=base_curr_p,
+                        exec_curr_p=exec_curr_p,
+                        base_day_open=base_day_open,
+                        avwap_avg_price=avwap_avg,
+                        avwap_qty=avwap_qty,
+                        avwap_alloc_cash=avwap_free_cash,
                         context_data=ctx_data,
-                        current_qty=avwap_qty,
-                        cfg=cfg,
-                        is_market_open=is_market_open(),
-                        early_exit_mode=early_exit_mode
+                        df_1min_base=df_1min_base,
+                        now_est=now_est,
+                        early_exit_mode=early_exit_mode,
+                        early_target_profit=early_target_profit
                     )
                     
                     action = decision.get("action")
