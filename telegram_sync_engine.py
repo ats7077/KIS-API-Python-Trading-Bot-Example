@@ -17,6 +17,8 @@
 # 실잔고 0주 감지 시, 매도 원장이 도달할 때까지 최대 10초간 스냅샷 생성을 락온하여 -100% 수익률 환각을 영구 적출함.
 # MODIFIED: [V30.09 3대 엣지 케이스 핀셋 수술] 0주 큐 강제 초기화(좀비 방어), 3일치 과거 체결 원장 딥스캔(환각 단가 방어), V14-VREV 직렬 간섭 완벽 디커플링 이식 완료.
 # MODIFIED: [V30.10 애프터마켓 졸업 MIA 방어] KIS 체결원장 None 결측치 Safe Casting 적용, 현재가 타임아웃 데드락 방어, 스냅샷 타입 충돌(AttributeError) 영구 락온 이식 완료.
+# MODIFIED: [V30.11 수동매수 누락 방어] 졸업 판별 시 장부 동기화(Sync) 누락 상태에서 발생한 미동기화 수동 매수 물량을 
+# 스냅샷 큐에 가상 지층으로 강제 편입하여 PnL 및 명예의 전당 수익률 누락(증발) 오차를 교정하는 멱등성 보정 엔진 이식 완료.
 # ==========================================================
 # NEW: [리팩토링 1단계] 핵심 비즈니스 코어(장부 동기화, 졸업 판별, 큐 관리) 독립 클래스로 캡슐화
 import logging
@@ -120,15 +122,24 @@ class TelegramSyncEngine:
                 recs_for_check = [r for r in self.cfg.get_ledger() if r['ticker'] == ticker]
                 ledger_qty_for_check, _, _, _ = self.cfg.calculate_holdings(ticker, recs_for_check)
                 
+                # MODIFIED: [V30.11 방어] 수동 매수로 인해 메인 장부와 큐 장부의 기준 수량이 다를 수 있으므로, 듀얼 락온 체계로 Lag Check 기준값을 상향 평준화
+                vrev_ledger_qty_for_check = 0
+                if self.cfg.get_version(ticker) == "V_REV":
+                    if not getattr(self, 'queue_ledger', None):
+                        from queue_ledger import QueueLedger
+                        self.queue_ledger = QueueLedger()
+                    vrev_ledger_qty_for_check = sum(int(float(item.get("qty") or 0)) for item in self.queue_ledger.get_queue(ticker))
+                
+                max_check_qty = max(ledger_qty_for_check, vrev_ledger_qty_for_check)
+
                 target_execs = []
-                if actual_qty == 0 and ledger_qty_for_check > 0:
+                if actual_qty == 0 and max_check_qty > 0:
                     max_retries = 5
                     for attempt in range(max_retries):
                         target_execs = await asyncio.to_thread(self.broker.get_execution_history, ticker, target_kis_str, target_kis_str)
                         if target_execs:
-                            # MODIFIED: [V30.10 방어] 결측치(None) 런타임 붕괴 방어용 Safe Casting (or '0') 적용
                             sold_today = sum(int(float(ex.get('ft_ccld_qty') or '0')) for ex in target_execs if ex.get('sll_buy_dvsn_cd') == "01")
-                            if sold_today >= ledger_qty_for_check:
+                            if sold_today >= max_check_qty:
                                 break
                         if attempt < max_retries - 1:
                             logging.info(f"⏳ [{ticker}] 체결 원장 지연(Lag) 감지. 최종 매도 단가 정밀 역산을 위해 대기 중... ({attempt+1}/{max_retries})")
@@ -226,34 +237,56 @@ class TelegramSyncEngine:
                         _vrev_snap_ok = False
                         snapshot = None
                         try:
-                            total_invested = sum(float(item.get("qty", 0)) * float(item.get("price", 0)) for item in q_data_before)
-                            q_avg_price = total_invested / vrev_ledger_qty if vrev_ledger_qty > 0 else 0.0
-                            
                             actual_clear_price = 0.0
+                            tot_q = 0
+                            
                             if target_execs:
                                 sell_execs = [ex for ex in target_execs if ex.get('sll_buy_dvsn_cd') == "01"]
                                 if sell_execs:
-                                    # MODIFIED: [V30.10 방어] 당일 원장 결측치(None) Safe Casting
                                     tot_amt = sum(int(float(ex.get('ft_ccld_qty') or '0')) * float(ex.get('ft_ccld_unpr3') or '0') for ex in sell_execs)
                                     tot_q = sum(int(float(ex.get('ft_ccld_qty') or '0')) for ex in sell_execs)
                                     if tot_q > 0:
                                         actual_clear_price = round(tot_amt / tot_q, 4)
                             
-                            # MODIFIED: [EC-2 방어] 당일 원장에 기록이 없다면 (어제 체결분) 3일치 과거 원장을 딥스캔하여 실제 체결 단가 복원
                             if actual_clear_price == 0.0:
                                 search_start_dt = (now_est - datetime.timedelta(days=3)).strftime('%Y%m%d')
                                 past_execs = await asyncio.to_thread(self.broker.get_execution_history, ticker, search_start_dt, target_kis_str)
                                 if past_execs:
                                     sell_execs = [ex for ex in past_execs if ex.get('sll_buy_dvsn_cd') == "01"]
                                     if sell_execs:
-                                        # MODIFIED: [V30.10 방어] 과거 원장 결측치(None) Safe Casting
                                         tot_amt = sum(int(float(ex.get('ft_ccld_qty') or '0')) * float(ex.get('ft_ccld_unpr3') or '0') for ex in sell_execs)
                                         tot_q = sum(int(float(ex.get('ft_ccld_qty') or '0')) for ex in sell_execs)
                                         if tot_q > 0:
                                             actual_clear_price = round(tot_amt / tot_q, 4)
                                             logging.info(f"🔍 [{ticker}] 과거 3일치 원장 스캔으로 애프터마켓 실제 매도 단가(${actual_clear_price})를 복원했습니다.")
 
-                            # MODIFIED: [V30.10 방어] 외부 API 지연으로 인한 스케줄러 영구 교착(Deadlock) 방지 10초 타임아웃
+                            # MODIFIED: [V30.11 방어] 장중 수동 매수 후 미동기화 상태에서 0주 졸업 시, 수익금 누락을 방어하기 위한 가상 지층 편입
+                            if tot_q > vrev_ledger_qty:
+                                missing_qty = tot_q - vrev_ledger_qty
+                                buy_execs = [ex for ex in (target_execs or []) if ex.get('sll_buy_dvsn_cd') == "02"]
+                                
+                                temp_invested = sum(float(item.get("qty", 0)) * float(item.get("price", 0)) for item in q_data_before)
+                                temp_avg = temp_invested / vrev_ledger_qty if vrev_ledger_qty > 0 else 0.0
+                                missing_price = temp_avg
+                                
+                                if buy_execs:
+                                    b_tot_amt = sum(int(float(ex.get('ft_ccld_qty') or '0')) * float(ex.get('ft_ccld_unpr3') or '0') for ex in buy_execs)
+                                    b_tot_q = sum(int(float(ex.get('ft_ccld_qty') or '0')) for ex in buy_execs)
+                                    if b_tot_q > 0:
+                                        missing_price = round(b_tot_amt / b_tot_q, 4)
+                                
+                                q_data_before.append({
+                                    "date": now_est.strftime('%Y-%m-%d %H:%M:%S'),
+                                    "qty": missing_qty,
+                                    "price": missing_price,
+                                    "exec_id": "MANUAL_SYNC"
+                                })
+                                vrev_ledger_qty = tot_q
+                                logging.info(f"🔧 [{ticker}] 미동기화 수동 매수 물량({missing_qty}주, 단가 ${missing_price})을 졸업 큐에 강제 편입하여 PnL 오차 교정 완료.")
+
+                            total_invested = sum(float(item.get("qty", 0)) * float(item.get("price", 0)) for item in q_data_before)
+                            q_avg_price = total_invested / vrev_ledger_qty if vrev_ledger_qty > 0 else 0.0
+
                             try:
                                 curr_p = await asyncio.wait_for(asyncio.to_thread(self.broker.get_current_price, ticker), timeout=10.0)
                             except asyncio.TimeoutError:
@@ -274,7 +307,6 @@ class TelegramSyncEngine:
                                     current_seed = self.cfg.get_seed(ticker)
                                     self.cfg.set_seed(ticker, current_seed + added_seed)
                                 
-                                # MODIFIED: [V30.10 방어] 스냅샷 날짜 파싱 AttributeError 우회 및 LIFO 큐 [0]번 인덱스로 시작일 역참조 교정
                                 cap_dt = snapshot['captured_at']
                                 cap_dt_str = cap_dt if isinstance(cap_dt, str) else cap_dt.strftime('%Y-%m-%d')
                                 start_dt_str = q_data_before[0]['date'][:10] if q_data_before else cap_dt_str[:10]
@@ -299,7 +331,6 @@ class TelegramSyncEngine:
                             logging.error(f"🚨 스냅샷 캡처 및 복리 정산 중 치명적 오류 감지: {e}")
                             snapshot = None
                             
-                        # MODIFIED: [EC-1 방어] 캡처 성공 여부와 무관하게 0주라면 큐를 즉시 100% 소각하여 무한 좀비루프 원천 차단
                         self.queue_ledger.sync_with_broker(ticker, 0)
                         
                         if _vrev_snap_ok:
@@ -310,7 +341,6 @@ class TelegramSyncEngine:
                             
                             if snapshot:
                                 try:
-                                    # MODIFIED: [V30.10 방어] 검증된 안전한 문자열 날짜 변수 주입
                                     img_path = self.view.create_profit_image(
                                         ticker=ticker, 
                                         profit=snapshot['realized_pnl'], 
@@ -366,6 +396,23 @@ class TelegramSyncEngine:
                                 except Exception as e:
                                     logging.error(f"🚨 VWAP 상태 교정 에러: {e}")
 
+                        # MODIFIED: [V30.11 방어] 정규장 중 수동 매수 감지 시 장부(config.json)에 비파괴 매수(BUY) 기록 추가
+                        elif actual_qty > 0 and actual_qty > vrev_ledger_qty:
+                            gap_qty = actual_qty - vrev_ledger_qty
+                            vrev_recs = [r for r in self.cfg.get_ledger() if r['ticker'] == ticker]
+                            calib_record = [{
+                                'date': target_ledger_str,
+                                'side': "BUY",
+                                'qty': gap_qty,
+                                'price': actual_avg,
+                                'avg_price': actual_avg,
+                                'exec_id': f"CALIB_VREV_BUY_{int(time.time())}",
+                                'desc': "V-REV 수동매수 보정",
+                                'is_reverse': True
+                            }]
+                            self.cfg.overwrite_incremental_ledger(ticker, vrev_recs, calib_record)
+                            logging.info(f"🔧 [{ticker}] 정규장 수동 매수 감지! {gap_qty}주 비파괴 장부(MAIN LEDGER) 보정 완료.")
+
                         calibrated = self.queue_ledger.sync_with_broker(ticker, actual_qty, actual_avg)
                         if calibrated:
                             await context.bot.send_message(chat_id, f"🔧 <b>[{ticker}] V-REV 큐(Queue) 비파괴 보정(CALIB) 완료!</b>\n▫️ KIS 실제 잔고(<b>{actual_qty}주</b>)에 맞춰 LIFO 지층을 정밀 차감/추가했습니다.", parse_mode='HTML')
@@ -375,8 +422,6 @@ class TelegramSyncEngine:
 
                 # ==========================================================
                 # V14 0주 졸업 판별 로직 
-                # MODIFIED: [EC-3 방어] V-REV 연산 실패 시 코드가 여기로 흘러내려가
-                # 강제 100% 손실 정산을 오발탄 타격하는 맹점을 elif 디커플링으로 영구 격리.
                 # ==========================================================
                 elif self.cfg.get_version(ticker) != "V_REV":
                     if actual_qty == 0:
@@ -386,7 +431,6 @@ class TelegramSyncEngine:
                             else:
                                 today_est_str = now_est.strftime('%Y-%m-%d')
                                 
-                                # MODIFIED: [V30.10 방어] 전일 종가 조회 시 타임아웃 10초 락온
                                 try:
                                     prev_c = await asyncio.wait_for(
                                         asyncio.to_thread(self.broker.get_previous_close, ticker),
