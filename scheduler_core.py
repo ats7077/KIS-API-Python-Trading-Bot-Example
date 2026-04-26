@@ -1,5 +1,5 @@
 # ==========================================================
-# [scheduler_core.py] - 🌟 100% 통합 완성본 (V27.25) 🌟
+# [scheduler_core.py] - 🌟 100% 통합 완성본 (V30.09) 🌟
 # ⚠️ 이 주석 및 파일명 표기는 절대 지우지 마세요.
 # 💡 [V24.09 패치] API 결측치(None) 방어용 Safe Casting 전면 이식 완료
 # 💡 [V24.10 수술] V_REV 동적 에스크로 차감 방어 (이중 차감 방지)
@@ -9,28 +9,33 @@
 # 🚨 [V27.21 그랜드 수술] 5분 정산 윈도우 확장, TOCTOU 락온, 일반 종목 예산 누수 방어, Fail-Open 차단 및 Orphan 주문 초기화 보류(Skip) 이식 완비
 # 🚀 [V27.24 그랜드 수술] 타임 패러독스 원천 차단! 08:30 동기화를 10:00 KST 확정 정산 시간으로 자동 시프트(Shift)하는 스마트 딜레이 엔진 탑재
 # 🚀 [V27.25 그랜드 수술] 서머타임 데드락 해제, 잔고 조회 API 병목(O(N)->O(1)) 격상, 계절변경 Fail-Open 맹점 영구 적출
+# 🛠️ [V27.26 긴급 패치] 17시 잔고 조회 시 증권사 API의 빈 리스트([]) 응답으로 인한 '.get' 에러(크래시) 원천 차단 방어막 이식
+# 🚀 [V29.05 그랜드 수술] 4대 엣지 케이스 완벽 차단! (비동기 데드락 방어, TOCTOU 락온, 결측치 누적 차단, 10시 정각 EST 멱등성 락)
+# MODIFIED: [V29.06 핫픽스] 얼리 웨이크업 타임 패러독스 원천 차단 (정산 딜레이 안전 마진 5.0초 강제 주입)
+# MODIFIED: [V30.08 그랜드 수술] 스마트 딜레이(Shift) 엔진 영구 철거. 콜드 스타트 시 RAM 휘발로 인한 10시 정산 누락 엣지 케이스를 원천 차단하고 다이렉트 타격 배선 완비.
+# MODIFIED: [V30.09 그랜드 수술] pytz 전면 적출 및 ZoneInfo 도입, KST 의존성 로직(get_target_hour 등) 영구 철거로 EST 100% 종속 달성
 # ==========================================================
 import os
 import logging
 import datetime
-import pytz
 import time
 import math
 import asyncio
 import glob
 import random
 import pandas_market_calendars as mcal
+# NEW: [멱등성 락온 및 다이렉트 I/O 제어를 위한 필수 내장 모듈 탑재]
+import json
+import tempfile
+# NEW: [V30.09] LMT 오차 방어를 위한 ZoneInfo 도입 및 pytz 적출
+from zoneinfo import ZoneInfo
 
-def is_dst_active():
-    est = pytz.timezone('US/Eastern')
-    return datetime.datetime.now(est).dst() != datetime.timedelta(0)
-
-def get_target_hour():
-    return (17, "🌞 서머타임 적용(여름)") if is_dst_active() else (18, "❄️ 서머타임 해제(겨울)")
+# MODIFIED: [V30.09] KST 종속적인 is_dst_active 및 get_target_hour 함수 영구 소각 (main.py에서 EST 팩트로 처리)
 
 def is_market_open():
     try:
-        est = pytz.timezone('US/Eastern')
+        # MODIFIED: [V30.09] pytz 적출 및 ZoneInfo('America/New_York') 락온
+        est = ZoneInfo('America/New_York')
         today = datetime.datetime.now(est)
         if today.weekday() >= 5: 
             return False
@@ -129,7 +134,6 @@ def perform_self_cleaning():
                 try: os.remove(f)
                 except: pass
                 
-        # NEW: [7일 초과 스냅샷 및 VWAP 상태 파일 소각 (디스크 부하 및 inode 누수 원천 차단)]
         for prefix in ["daily_snapshot_*", "vwap_state_*"]:
             for f in glob.glob(f"data/{prefix}.json"):
                 if os.path.isfile(f) and os.stat(f).st_mtime < now - seven_days:
@@ -161,19 +165,7 @@ async def scheduled_token_check(context):
 # ==========================================================
 
 async def scheduled_force_reset(context):
-    kst = pytz.timezone('Asia/Seoul')
-    now = datetime.datetime.now(kst)
-    target_hour, _ = get_target_hour()
-    
-    now_minutes = now.hour * 60 + now.minute
-    target_minutes = target_hour * 60
-    
-    diff = min((now_minutes - target_minutes) % 1440, (target_minutes - now_minutes) % 1440)
-    
-    # MODIFIED: [치명적 오류 1 해결] 서머타임 변경(1시간) 시 스케줄러 오차를 포용하도록 하드스탑 락을 65분으로 완화 (데드락 방어)
-    if diff > 65:
-        return
-        
+    # MODIFIED: [V30.09] 스케줄러 자체(main.py)에서 EST 04:00에 정확히 격발되므로 KST 시간 검증(diff > 65) 맹점 로직 전면 소각
     if not is_market_open():
         await context.bot.send_message(chat_id=context.job.chat_id, text="⛔ <b>오늘은 미국 증시 휴장일입니다. 금일 시스템 매매 잠금 해제 및 정규장 주문 스케줄을 모두 건너뜁니다.</b>", parse_mode='HTML')
         return
@@ -185,18 +177,20 @@ async def scheduled_force_reset(context):
         tx_lock = app_data['tx_lock']
         chat_id = context.job.chat_id
         
-        cfg.reset_locks()
+        # MODIFIED: [이벤트 루프 데드락 방어를 위한 비동기 I/O 래핑]
+        await asyncio.to_thread(cfg.reset_locks)
         
         for t in cfg.get_active_tickers():
             if hasattr(cfg, 'set_order_locked'):
-                cfg.set_order_locked(t, False)
+                await asyncio.to_thread(cfg.set_order_locked, t, False)
         
         msg_addons = ""
         HARD_STOP_THRESHOLDS = {"TQQQ": -15.0, "SOXL": -20.0}
         
-        # MODIFIED: [치명적 오류 2 해결] 루프 내부에서 불필요하게 반복 호출되던 전체 계좌 잔고 조회를 루프 외부로 1단계 격상하여 O(1) 호출로 최적화
         async with tx_lock:
             _, holdings_snap = await asyncio.to_thread(broker.get_account_balance)
+            
+        safe_holdings = holdings_snap if isinstance(holdings_snap, dict) else {}
             
         for t in cfg.get_active_tickers():
             rev_state = cfg.get_reverse_state(t)
@@ -205,92 +199,107 @@ async def scheduled_force_reset(context):
                 async with tx_lock:
                     curr_p = await asyncio.to_thread(broker.get_current_price, t)
                 
-                h_data = (holdings_snap or {}).get(t) or {}
+                h_data = safe_holdings.get(t) or {}
                 actual_avg = float(h_data.get('avg') or 0.0)
                 curr_p = float(curr_p or 0.0)
                 
-                if curr_p > 0 and actual_avg > 0:
-                    curr_ret = (curr_p - actual_avg) / actual_avg * 100.0
-                    
-                    exit_threshold = HARD_STOP_THRESHOLDS.get(t)
-                    if exit_threshold is None:
-                        logging.error(f"🚨 [FATAL] {t}에 대한 하드스탑 임계치가 설정되지 않았습니다.")
-                        continue
-                    
-                    if curr_ret <= exit_threshold:
-                        try:
-                            cancelled = await asyncio.to_thread(broker.cancel_all_orders, t)
-                            await asyncio.sleep(1.0)
-                            logging.warning(f"🚨 [HardStop] {t} 미체결 주문 {cancelled}건 취소 완료")
-                        except Exception as cancel_err:
-                            logging.error(f"🚨 [HardStop] {t} 주문 취소 실패 — 수동 확인 필수: {cancel_err}")
-                            await context.bot.send_message(chat_id=chat_id, text=f"🚨 <b>[{t}] 하드스탑 주문 취소 에러!</b> 미체결 주문을 수동으로 확인하세요. (상태 초기화 보류)", parse_mode='HTML')
-                            continue 
+                # MODIFIED: [API 에러(None) 결측치 시 리버스 일차 강제 누적 맹점 원천 차단]
+                if curr_p <= 0.0 or actual_avg <= 0.0:
+                    logging.warning(f"🚨 [{t}] 현재가 또는 평단가 팩트 스캔 실패(API 에러). 시간 오염 방지를 위해 리버스 일차 누적을 패스(Skip)합니다.")
+                    continue
+                
+                curr_ret = (curr_p - actual_avg) / actual_avg * 100.0
+                
+                exit_threshold = HARD_STOP_THRESHOLDS.get(t)
+                if exit_threshold is None:
+                    logging.error(f"🚨 [FATAL] {t}에 대한 하드스탑 임계치가 설정되지 않았습니다.")
+                    continue
+                
+                if curr_ret <= exit_threshold:
+                    try:
+                        cancelled = await asyncio.to_thread(broker.cancel_all_orders, t)
+                        await asyncio.sleep(1.0)
+                        logging.warning(f"🚨 [HardStop] {t} 미체결 주문 {cancelled}건 취소 완료")
+                    except Exception as cancel_err:
+                        logging.error(f"🚨 [HardStop] {t} 주문 취소 실패 — 수동 확인 필수: {cancel_err}")
+                        await context.bot.send_message(chat_id=chat_id, text=f"🚨 <b>[{t}] 하드스탑 주문 취소 에러!</b> 미체결 주문을 수동으로 확인하세요. (상태 초기화 보류)", parse_mode='HTML')
+                        continue 
 
-                        cfg.set_reverse_state(t, False, 0, 0.0)
-                        cfg.clear_escrow_cash(t)
+                    # MODIFIED: [장부 데이터 동시성 충돌(TOCTOU) 방어 락온 및 이벤트 루프 교착 차단]
+                    async with tx_lock:
+                        await asyncio.to_thread(cfg.set_reverse_state, t, False, 0, 0.0)
+                        await asyncio.to_thread(cfg.clear_escrow_cash, t)
                         
-                        ledger_data = cfg.get_ledger()
+                        ledger_data = await asyncio.to_thread(cfg.get_ledger)
                         changed = False
                         for lr in ledger_data:
                             if lr.get('ticker') == t and lr.get('is_reverse', False):
                                 lr['is_reverse'] = False
                                 changed = True
                         if changed:
-                            cfg._save_json(cfg.FILES["LEDGER"], ledger_data)
-                            
-                        msg_addons += f"\n🚨 <b>[{t}] 하드스탑 확정 탈출 발동 (수익률: {curr_ret:.2f}% <= 기준: {exit_threshold}%)!</b>\n▫️ 격리 병동을 즉시 폐쇄하고 V14 본대로 완벽히 복귀했습니다."
-                    else:
-                        cfg.increment_reverse_day(t)
+                            await asyncio.to_thread(cfg._save_json, cfg.FILES["LEDGER"], ledger_data)
+                        
+                    msg_addons += f"\n🚨 <b>[{t}] 하드스탑 확정 탈출 발동 (수익률: {curr_ret:.2f}% <= 기준: {exit_threshold}%)!</b>\n▫️ 격리 병동을 즉시 폐쇄하고 V14 본대로 완벽히 복귀했습니다."
                 else:
-                    cfg.increment_reverse_day(t)
+                    # MODIFIED: [이벤트 루프 블로킹 방어]
+                    await asyncio.to_thread(cfg.increment_reverse_day, t)
                 
-        final_msg = f"🔓 <b>[{target_hour}:00] 시스템 일일 초기화 완료 (매매 잠금 해제 & 팩트 스캔)</b>" + msg_addons
+        # MODIFIED: [V30.09] 메세지 하드코딩된 KST 타겟시간 제거 및 EST 04:00 락온 텍스트로 치환
+        final_msg = f"🔓 <b>[04:00 EST] 시스템 일일 초기화 완료 (매매 잠금 해제 & 팩트 스캔)</b>" + msg_addons
         await context.bot.send_message(chat_id=chat_id, text=final_msg, parse_mode='HTML')
         
     except Exception as e:
         await context.bot.send_message(chat_id=context.job.chat_id, text=f"🚨 <b>시스템 초기화 중 에러 발생:</b> {e}", parse_mode='HTML')
 
 # ==========================================================
-# 🚀 [V27.24] 스마트 딜레이 엔진: 모든 아침 정산을 KIS 배치 완료 시점인 10:00 KST로 강제 시프트
+# 🚀 [V30.08] 스마트 딜레이 엔진 영구 철거: main.py의 10:00:05 KST 다이렉트 배선에 맞춰 
+# 콜드 스타트 기억상실(Amnesia)을 유발하던 RAM 휘발성 딜레이(Shift) 로직 전면 소각
 # ==========================================================
 
-async def delayed_auto_sync(context):
-    """10:00 KST에 최종 격발되는 실질적 정산 엔진"""
-    await run_auto_sync(context, "10:00")
-
 async def scheduled_auto_sync_summer(context):
-    # MODIFIED: [치명적 오류 3 해결] 계절 변경 시 동기화가 영구 누락되는 Fail-Open 방어막 적출
-    
-    kst = pytz.timezone('Asia/Seoul')
-    now = datetime.datetime.now(kst)
-    
-    # 🚨 10시 이전(08:30)에 깨어났다면, 10시 정각에 다시 일어나도록 알람(Snooze)을 맞추고 수면
-    if now.hour < 10:
-        target_time = now.replace(hour=10, minute=0, second=0, microsecond=0)
-        delay = (target_time - now).total_seconds()
-        context.job_queue.run_once(delayed_auto_sync, delay, data=context.job.data, chat_id=context.job.chat_id)
-        logging.info(f"⏳ [정산 지연 엔진 가동] 100% 확정 결제 데이터 스캔을 위해 동기화 스케줄을 10:00로 시프트합니다. ({delay}초 뒤 격발)")
-        return
-        
+    # MODIFIED: [콜드 스타트 기억상실 원천 차단] 복잡한 지연(Delay) 로직 소각 후 다이렉트 타격
+    logging.info("🌞 [여름 정산] 10:00 KST 확정 정산 엔진 다이렉트 가동")
     await run_auto_sync(context, "10:00")
 
 async def scheduled_auto_sync_winter(context):
-    # MODIFIED: [치명적 오류 3 해결] 계절 변경 시 동기화가 영구 누락되는 Fail-Open 방어막 적출
-    
-    kst = pytz.timezone('Asia/Seoul')
-    now = datetime.datetime.now(kst)
-    
-    if now.hour < 10:
-        target_time = now.replace(hour=10, minute=0, second=0, microsecond=0)
-        delay = (target_time - now).total_seconds()
-        context.job_queue.run_once(delayed_auto_sync, delay, data=context.job.data, chat_id=context.job.chat_id)
-        logging.info(f"⏳ [정산 지연 엔진 가동] 100% 확정 결제 데이터 스캔을 위해 동기화 스케줄을 10:00로 시프트합니다. ({delay}초 뒤 격발)")
-        return
-        
+    # MODIFIED: [콜드 스타트 기억상실 원천 차단] 복잡한 지연(Delay) 로직 소각 후 다이렉트 타격
+    logging.info("❄️ [겨울 정산] 10:00 KST 확정 정산 엔진 다이렉트 가동")
     await run_auto_sync(context, "10:00")
 
 async def run_auto_sync(context, time_str):
+    # NEW: [타임존 락온(EST) 및 10시 정각 중복 발급(Double Fire) 방어용 다이렉트 I/O 멱등성 락]
+    def _check_and_set_lock():
+        # MODIFIED: [V30.09] pytz 적출 및 ZoneInfo 락온
+        est_tz = ZoneInfo('America/New_York')
+        today_est = datetime.datetime.now(est_tz).strftime("%Y-%m-%d")
+        lock_file = "data/sync_lock.json"
+        os.makedirs("data", exist_ok=True)
+
+        try:
+            if os.path.exists(lock_file):
+                with open(lock_file, "r") as f:
+                    lock_data = json.load(f)
+                    if lock_data.get("last_sync") == today_est:
+                        return False, today_est
+        except Exception:
+            pass
+
+        try:
+            # Atomic Write 원칙 준수
+            fd, tmp_path = tempfile.mkstemp(dir="data", text=True)
+            with os.fdopen(fd, 'w') as f:
+                json.dump({"last_sync": today_est}, f)
+            os.replace(tmp_path, lock_file)
+        except Exception as e:
+            logging.error(f"🚨 동기화 락온 파일 저장 실패: {e}")
+
+        return True, today_est
+
+    can_run, today_est = await asyncio.to_thread(_check_and_set_lock)
+    if not can_run:
+        logging.info(f"⏳ [정산 멱등성 락온] 오늘({today_est} EST)의 10시 확정 정산이 이미 완료되었습니다. 중복 실행 및 다중 렌더링을 100% 차단합니다.")
+        return
+
     chat_id = context.job.chat_id
     bot = context.job.data['bot']
     status_msg = await context.bot.send_message(chat_id=chat_id, text=f"📝 <b>[{time_str}] 장부 자동 동기화 및 졸업 무결성 검증을 시작합니다.</b>", parse_mode='HTML')

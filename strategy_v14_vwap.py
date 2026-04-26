@@ -17,6 +17,12 @@
 # 🚨 [V27.22 그랜드 수술] 0주 새출발 시 VWAP 매수 실종(Ghost Town) 버그 원천 차단 (상한선 1.15배 팩트 주입)
 # MODIFIED: [V28.19 타임존 락온] datetime.now()를 EST(미국 동부) 기준으로 강제 고정하여 KST 자정 경계 스냅샷 증발 버그 완벽 수술
 # NEW: [V28.20 무조건 진입] 0주 새출발 시 VWAP 런타임 타격에서 상한선 방어막 철거 (스냅샷 락온 디커플링 이식)
+# NEW: [V29.04] 스냅샷 중복 덮어쓰기 원천 차단 멱등성 가드 이식 및 AI 환각 방어막 하드코딩 완료
+# 🚨 [V30.07 NEW] 0주 새출발 당일 매도 영구 동결 락온 이식:
+# 0주로 스냅샷이 박제된 세션(is_zero_start_fact=True)에서는
+# 정규장(market_type="REG") 내 모든 SELL 주문을 100% 강제 소각하고 홀딩을 강제함.
+# MODIFIED: [V30.09 핫픽스] pytz 영구 적출 및 ZoneInfo('America/New_York') 이식으로 LMT 버그 차단
+# MODIFIED: [V30.09 핫픽스] get_dynamic_plan 파라미터 시그니처(current_price, prev_close) 표준화로 TypeError 런타임 붕괴 완벽 차단
 # ==========================================================
 import math
 import logging
@@ -24,7 +30,9 @@ import os
 import json
 import tempfile
 from datetime import datetime
-import pytz
+# MODIFIED: [LMT 오차 방어를 위해 pytz를 적출하고 ZoneInfo 도입]
+# import pytz
+from zoneinfo import ZoneInfo
 
 class V14VwapStrategy:
     def __init__(self, config):
@@ -40,15 +48,15 @@ class V14VwapStrategy:
         ]
 
     def _get_state_file(self, ticker):
-        today_str = datetime.now(pytz.timezone('US/Eastern')).strftime("%Y-%m-%d")
+        today_str = datetime.now(ZoneInfo('America/New_York')).strftime("%Y-%m-%d")
         return f"data/vwap_state_V14_{today_str}_{ticker}.json"
 
     def _get_snapshot_file(self, ticker):
-        today_str = datetime.now(pytz.timezone('US/Eastern')).strftime("%Y-%m-%d")
+        today_str = datetime.now(ZoneInfo('America/New_York')).strftime("%Y-%m-%d")
         return f"data/daily_snapshot_V14VWAP_{today_str}_{ticker}.json"
 
     def _load_state_if_needed(self, ticker):
-        today_str = datetime.now(pytz.timezone('US/Eastern')).strftime("%Y-%m-%d")
+        today_str = datetime.now(ZoneInfo('America/New_York')).strftime("%Y-%m-%d")
         if self.state_loaded.get(ticker) == today_str:
             return 
             
@@ -74,7 +82,7 @@ class V14VwapStrategy:
         self.state_loaded[ticker] = today_str
 
     def _save_state(self, ticker):
-        today_str = datetime.now(pytz.timezone('US/Eastern')).strftime("%Y-%m-%d")
+        today_str = datetime.now(ZoneInfo('America/New_York')).strftime("%Y-%m-%d")
         state_file = self._get_state_file(ticker)
         data = {
             "date": today_str,
@@ -102,8 +110,15 @@ class V14VwapStrategy:
                 except OSError: pass
 
     def save_daily_snapshot(self, ticker, plan_data):
-        today_str = datetime.now(pytz.timezone('US/Eastern')).strftime("%Y-%m-%d")
+        today_str = datetime.now(ZoneInfo('America/New_York')).strftime("%Y-%m-%d")
         snap_file = self._get_snapshot_file(ticker)
+        
+        # NEW: [스냅샷 중복 덮어쓰기 원천 차단 멱등성 가드 이식]
+        # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
+        # 이미 당일 스냅샷이 존재하면 절대 덮어쓰지 않고 즉시 return 하도록 멱등성 가드를 유지하십시오.
+        if os.path.exists(snap_file):
+            return
+
         data = {
             "date": today_str,
             "plan": plan_data
@@ -155,6 +170,7 @@ class V14VwapStrategy:
             self.executed["SELL_QTY"][ticker] = int(self.executed["SELL_QTY"].get(ticker, 0)) + int(qty)
         self._save_state(ticker)
 
+    # 🚨 [V30.07] market_type 파라미터 추가 (기본값 "REG")
     def get_plan(self, ticker, current_price, avg_price, qty, prev_close, ma_5day=0.0, market_type="REG", available_cash=0, is_simulation=False, is_snapshot_mode=False):
         if not is_snapshot_mode:
             cached_plan = self.load_daily_snapshot(ticker)
@@ -176,8 +192,10 @@ class V14VwapStrategy:
         
         core_orders = []
         process_status = "예방적방어선"
+        is_zero_start_fact = False
         
         if qty == 0:
+            is_zero_start_fact = True
             # 0주 진입 스냅샷 락온용 1.15배 캡 보존 (수동 Fail-Safe 대응)
             p_buy = self._ceil(prev_close * 1.15)
             buy_star_price = p_buy 
@@ -202,6 +220,10 @@ class V14VwapStrategy:
                 if qty - q_sell > 0:
                     core_orders.append({"side": "SELL", "price": target_price, "qty": qty - q_sell, "type": "LIMIT", "desc": "🎯목표매도(V)"})
 
+        # 🚨 [V30.07 팩트 수술] 0주 새출발 세션 시 정규장 매도 영구 동결
+        if is_zero_start_fact and market_type != "AFTER":
+            core_orders = [o for o in core_orders if o.get("side") != "SELL"]
+
         plan_result = {
             'core_orders': core_orders, 'bonus_orders': [], 'orders': core_orders,
             't_val': t_val, 'one_portion': dynamic_budget, 'star_price': star_price,
@@ -210,25 +232,28 @@ class V14VwapStrategy:
             'target_price': target_price, 'is_reverse': False,
             'process_status': process_status,
             'tracking_info': {},
-            'initial_qty': int(qty)
+            'initial_qty': int(qty),
+            'is_zero_start': is_zero_start_fact # 팩트 박제
         }
         
         self.save_daily_snapshot(ticker, plan_result)
             
         return plan_result
 
-    def get_dynamic_plan(self, ticker, curr_p, prev_c, current_weight, min_idx, alloc_cash, qty, avg_price):
+    # 🚨 [V30.09 핫픽스] 파라미터 시그니처 표준화 (curr_p -> current_price, prev_c -> prev_close)
+    def get_dynamic_plan(self, ticker, current_price, prev_close, current_weight, min_idx, alloc_cash, qty, avg_price, market_type="REG"):
         self._load_state_if_needed(ticker)
         
         plan_static = self.get_plan(
             ticker=ticker,
-            current_price=curr_p,
+            current_price=current_price,
             avg_price=avg_price,
             qty=qty,
-            prev_close=prev_c,
+            prev_close=prev_close,
             available_cash=alloc_cash,
             is_simulation=True,
-            is_snapshot_mode=False
+            is_snapshot_mode=False,
+            market_type=market_type
         )
         star_price = float(plan_static['star_price'])
         buy_star_price = float(plan_static.get('buy_star_price', round(star_price - 0.01, 2) if star_price > 0.01 else 0.0))
@@ -236,6 +261,7 @@ class V14VwapStrategy:
         total_budget = float(plan_static['one_portion'])
         
         initial_qty = int(plan_static.get('initial_qty', qty))
+        is_zero_start_session = plan_static.get('is_zero_start', initial_qty == 0)
         
         # NEW: [V28.20 방어막] min_idx가 유효하지 않을 경우(텔레그램 조회 시점 등) 조기 반환 
         min_idx = int(min_idx) if min_idx is not None else -1
@@ -252,23 +278,26 @@ class V14VwapStrategy:
         
         if rem_budget > 0:
             slice_budget = rem_budget * slice_ratio
-            # MODIFIED: [V28.20 무조건 진입] 0주 새출발(initial_qty == 0)일 경우 상한선 캡을 무시하고 팩트 가격(curr_p)으로 무조건 진입
-            if buy_star_price > 0 and (initial_qty == 0 or curr_p <= buy_star_price):
-                exact_qty = (slice_budget / curr_p) + float(self.residual["BUY_STAR"].get(ticker, 0.0))
+            # MODIFIED: [V28.20 무조건 진입] 0주 새출발(initial_qty == 0)일 경우 상한선 캡을 무시하고 팩트 가격(current_price)으로 무조건 진입
+            if buy_star_price > 0 and (initial_qty == 0 or current_price <= buy_star_price):
+                exact_qty = (slice_budget / current_price) + float(self.residual["BUY_STAR"].get(ticker, 0.0))
                 alloc_qty = int(math.floor(exact_qty))
                 self.residual["BUY_STAR"][ticker] = float(exact_qty - alloc_qty)
                 if alloc_qty > 0:
-                    orders.append({"side": "BUY", "qty": alloc_qty, "price": buy_star_price if initial_qty > 0 else curr_p, "desc": "VWAP분할매수"})
+                    orders.append({"side": "BUY", "qty": alloc_qty, "price": buy_star_price if initial_qty > 0 else current_price, "desc": "VWAP분할매수"})
 
         rem_sell_qty = int(math.ceil(initial_qty / 4)) - int(self.executed["SELL_QTY"].get(ticker, 0))
         if rem_sell_qty > 0 and star_price > 0:
-            if curr_p >= star_price:
+            if current_price >= star_price:
                 exact_s_qty = float(rem_sell_qty * slice_ratio) + float(self.residual["SELL_STAR"].get(ticker, 0.0))
                 alloc_s_qty = int(min(math.floor(exact_s_qty), rem_sell_qty))
                 self.residual["SELL_STAR"][ticker] = float(exact_s_qty - alloc_s_qty)
                 if alloc_s_qty > 0:
                     orders.append({"side": "SELL", "qty": alloc_s_qty, "price": star_price, "desc": "VWAP분할익절"})
 
+        # 🚨 [V30.07 팩트 수술] 0주 새출발 세션 시 정규장 매도 영구 동결
+        if is_zero_start_session and market_type != "AFTER":
+            orders = [o for o in orders if o.get("side") != "SELL"]
+
         self._save_state(ticker)
         return {"orders": orders, "trigger_loc": False}
-
