@@ -1,20 +1,16 @@
 # ==========================================================
 # [strategy.py] - 🌟 2대 코어 + 하이브리드 라우터 완성본 🌟
 # ⚠️ 이 주석 및 파일명 표기는 절대 지우지 마세요.
-# 💡 [V24.15 대수술] V_VWAP 영구 소각 및 2대 코어(V14, V-REV) 체제 확립
-# 💡 [V24.18 하이브리드] VAvwapHybridPlugin 의존성 이름 교정 및 샌드박스 유지
-# 🚨 [V25.08 팩트 동기화] V-REV 종목 지시서 누수(DI Leak) 방어를 위한 지능형 동적 라우터(Dynamic Router) 구축
-# 🚨 [V25.19 핫픽스] 레거시 모드 감지 시 로컬 version 변수 미업데이트 맹점 팩트 교정
-# 🚀 [V26.02 핵심 수술] V14 오리지널 모드 내 LOC/VWAP 집행 방식 이원화 라우팅 탑재
-# 🚀 [V26.07 확정 순수익 렌더링 패치] V-REV 메모리 스냅샷 수수료(0.5%) 완벽 차감 이식
-# MODIFIED: [V28.25 그랜드 수술] V-REV 메모리 스냅샷에 동적 수수료 팩트 역산 엔진 이식 완료
-# 🚨 [V28.51 팩트 수술] 정규장 스케줄러 TypeError 붕괴 및 AVWAP 스나이퍼 크래시 원천 차단 (파라미터 디커플링 파이프라인 100% 개통)
-# 🚨 [V29.03 팩트 수술] AVWAP 기억상실 방어막: 영속성 캐시(Persistence) 데이터가 스케줄러와 플러그인 사이를 안전하게 오가도록 캡슐화 라우팅 배선 개통 완료.
-# MODIFIED: [V30.09 핫픽스] capture_vrev_snapshot 내 KST 의존성 소각 및 ZoneInfo('America/New_York') 이식
+# 🚨 MODIFIED: [V32.00 그랜드 수술] 불필요한 AVWAP 동적 파라미터 수신 배선 완전 소각
+# NEW: [V40.XX 옴니 매트릭스 절대 헌법] TQQQ(V14) / SOXS(V-REV) 런타임 강제 라우팅(Bypass) 쉴드 이식
+# 🚨 MODIFIED: [V40.XX 옴니 매트릭스 전면 수술] 후행성 60MA/120MA 엔진 전면 소각 및
+# 전일 VWAP vs 당일 실시간 VWAP 동행 지표(Coincident Indicator) 듀얼 모멘텀 엔진 수신 및 라우팅 락온
+# 🚨 MODIFIED: [V43.00 작전 통제실 복구] AVWAP 사용자가 설정하는 커스텀 목표 수익률(Target) 및 근무 모드(조기퇴근/다중출장) 파라미터를 하위 플러그인(strategy_v_avwap)으로 전달하는 라우터 배선 복구 완료.
+# 🚨 MODIFIED: [V44.03 AVWAP 매수 방어] **kwargs 배선 개통으로 5일 ATR 등 신규 파라미터 주입 호환성 확보
+# 🚨 MODIFIED: [V44.61 팩트 교정] VWAP 지배력(Dominance) 분석 시 프리마켓 거래량 노이즈 원천 차단 및 정규장 100% 락온
 # ==========================================================
 import logging
 import pandas as pd
-# NEW: [V30.09] 타임존 무결성을 위한 ZoneInfo 도입
 from zoneinfo import ZoneInfo
 from strategy_v14 import V14Strategy
 from strategy_v_avwap import VAvwapHybridPlugin  
@@ -22,11 +18,14 @@ from strategy_reversion import ReversionStrategy
 from strategy_v14_vwap import V14VwapStrategy
 
 class InfiniteStrategy:
+    
     def __init__(self, config):
         self.cfg = config
         self.v14_plugin = V14Strategy(config)
         self.v_avwap_plugin = VAvwapHybridPlugin()
-        self.v_rev_plugin = ReversionStrategy()
+        # MODIFIED: [V42 U-Curve 락온 무결성 복구] ReversionStrategy 객체 생성 시 config 인자 주입 배선 100% 복구
+        # 🚨 [AI 에이전트 절대 주의 - 환각(Hallucination) 방어막] V42 U-Curve 락온 무결성 유지를 위해 config 주입을 훼손하지 말 것
+        self.v_rev_plugin = ReversionStrategy(config)
         self.v14_vwap_plugin = V14VwapStrategy(config)
 
     def analyze_vwap_dominance(self, df):
@@ -34,6 +33,16 @@ class InfiniteStrategy:
             return {"vwap_price": 0.0, "is_strong_up": False, "is_strong_down": False}
             
         try:
+            # 🚨 MODIFIED: [V44.61 팩트 수술] 프리마켓 거래량 노이즈가 지배력 연산을 오염시키는 맹점 원천 차단
+            # [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
+            # YF API가 프리마켓 데이터를 포함하여 반환하므로 순수 정규장 모멘텀만을 
+            # 측정하기 위해 반드시 '093000' ~ '155900' 구간만 필터링해야 합니다.
+            if 'time_est' in df.columns:
+                df = df[(df['time_est'] >= '093000') & (df['time_est'] <= '155900')]
+            
+            if df.empty or len(df) < 10:
+                return {"vwap_price": 0.0, "is_strong_up": False, "is_strong_down": False}
+
             if 'High' in df.columns and 'Low' in df.columns:
                 typical_price = (df['High'] + df['Low'] + df['Close']) / 3.0
             else:
@@ -84,38 +93,82 @@ class InfiniteStrategy:
         except Exception as e:
             return {"vwap_price": 0.0, "is_strong_up": False, "is_strong_down": False}
 
-    # 🚨 [V28.51 팩트 교정] TypeError 방어막: 스케줄러가 던지는 is_snapshot_mode 파라미터를 
-    # 무결하게 수신하여 하위 엔진으로 패스하도록 시그니처 대수술 완료.
-    def get_plan(self, ticker, current_price, avg_price, qty, prev_close, ma_5day=0.0, market_type="REG", available_cash=0, is_simulation=False, vwap_status=None, is_snapshot_mode=False):
+    def apply_omni_matrix_filter(self, ticker, qty, regime_data):
+        """
+        VWAP 동행 지표 기반의 국면 데이터(regime_data)를 해석하여,
+        현재 요청된 티커(SOXL 또는 SOXS)가 당일 신규 매수 가능한지 판별합니다.
+        보유 수량(qty)이 1주라도 있다면 1층 청산(SELL)은 무조건 허용합니다.
+        """
+        if not regime_data or regime_data.get("status") != "success":
+            return {"allow_buy": False, "allow_sell": qty > 0, "msg": "VWAP 모멘텀 판별 불가 (안전 대기)"}
+
+        target_ticker = regime_data.get("target_ticker", "NONE")
+        regime = regime_data.get("regime", "SIDEWAYS")
+        desc = regime_data.get("desc", regime)
+
+        # 횡보장 휩소 구간 (방향성 충돌): 신규 매수 전면 차단 (암살자 퇴직 모드)
+        if target_ticker == "NONE" or regime == "SIDEWAYS":
+            return {"allow_buy": False, "allow_sell": qty > 0, "msg": f"{desc} - 암살자 퇴직 (신규 진입 차단)"}
+
+        # 듀얼 모멘텀 공수 일치 여부 확인
+        if ticker.upper() == target_ticker.upper():
+            return {"allow_buy": True, "allow_sell": True, "msg": f"{desc} - {ticker.upper()} 진입 락온"}
+        else:
+            return {"allow_buy": False, "allow_sell": qty > 0, "msg": f"{desc} - {ticker.upper()} 진입 차단 (타겟: {target_ticker})"}
+
+    def get_plan(self, ticker, current_price, avg_price, qty, prev_close, ma_5day=0.0, market_type="REG", available_cash=0, is_simulation=False, vwap_status=None, is_snapshot_mode=False, regime_data=None):
         version = self.cfg.get_version(ticker)
         
+        # 🚨 [V40.XX 절대 헌법] SOXS = V-REV 전용, TQQQ = V14 전용 강제 락온(Bypass)
+        if ticker.upper() == "SOXS" and version != "V_REV":
+            logging.warning(f"🚨 [{ticker}] 절대 헌법 위반 감지. V_REV 모드로 강제 라우팅합니다.")
+            self.cfg.set_version(ticker, "V_REV")
+            version = "V_REV"
+        elif ticker.upper() == "TQQQ" and version != "V14":
+            logging.warning(f"🚨 [{ticker}] 절대 헌법 위반 감지. V14 모드로 강제 라우팅합니다.")
+            self.cfg.set_version(ticker, "V14")
+            version = "V14"
+
         if version in ["V13", "V17", "V_VWAP", "V_AVWAP"]:
             logging.warning(f"[{ticker}] 폐기된 레거시 모드({version}) 감지. V14 엔진으로 강제 라우팅합니다.")
             self.cfg.set_version(ticker, "V14")
             version = "V14"
 
         is_vwap_enabled = getattr(self.cfg, 'get_manual_vwap_mode', lambda x: False)(ticker)
+        
+        # 기본 플랜 산출
         if version == "V14" and is_vwap_enabled:
-            return self.v14_vwap_plugin.get_plan(
+            plan = self.v14_vwap_plugin.get_plan(
                 ticker=ticker, current_price=current_price, avg_price=avg_price, qty=qty,
                 prev_close=prev_close, ma_5day=ma_5day, market_type=market_type,
                 available_cash=available_cash, is_simulation=is_simulation,
                 is_snapshot_mode=is_snapshot_mode
             )
-
-        if version == "V_REV":
-            return {
+        elif version == "V_REV":
+            plan = {
                 'core_orders': [], 'bonus_orders': [], 'orders': [],
                 't_val': 0.0, 'is_reverse': False, 'star_price': 0.0, 'one_portion': 0.0
             }
+        else:
+            # MODIFIED: [V44.58 라우팅 누수 디커플링 붕괴 엣지 케이스 수술] v14_plugin.get_plan 호출 시 is_snapshot_mode 파라미터 배선 팩트 복구 완료
+            plan = self.v14_plugin.get_plan(
+                ticker=ticker, current_price=current_price, avg_price=avg_price, qty=qty,
+                prev_close=prev_close, ma_5day=ma_5day, market_type=market_type,
+                available_cash=available_cash, is_simulation=is_simulation, vwap_status=vwap_status,
+                is_snapshot_mode=is_snapshot_mode
+            )
+            
+        # [V40.XX] 옴니 매트릭스 필터 적용 (매수 락온 및 청산 패스)
+        if regime_data is not None:
+            omni_filter = self.apply_omni_matrix_filter(ticker, qty, regime_data)
+            if not omni_filter["allow_buy"]:
+                plan['core_orders'] = [o for o in plan.get('core_orders', []) if o.get('side') != 'BUY']
+                plan['bonus_orders'] = [o for o in plan.get('bonus_orders', []) if o.get('side') != 'BUY']
+                plan['orders'] = [o for o in plan.get('orders', []) if o.get('side') != 'BUY']
+                plan['omni_msg'] = omni_filter["msg"]
+                
+        return plan
 
-        return self.v14_plugin.get_plan(
-            ticker=ticker, current_price=current_price, avg_price=avg_price, qty=qty,
-            prev_close=prev_close, ma_5day=ma_5day, market_type=market_type,
-            available_cash=available_cash, is_simulation=is_simulation, vwap_status=vwap_status
-        )
-
-    # MODIFIED: [V28.25] V-REV 메모리 스냅샷에 동적 수수료 팩트 역산 로직 이식
     def capture_vrev_snapshot(self, ticker, clear_price, avg_price, qty):
         if qty <= 0: return None
         
@@ -136,13 +189,9 @@ class InfiniteStrategy:
             "cleared_qty": qty,
             "realized_pnl": realized_pnl,
             "realized_pnl_pct": realized_pnl_pct,
-            # MODIFIED: [V30.09 핫픽스] KST 의존성 소각 및 ZoneInfo('America/New_York') 이식
             "captured_at": pd.Timestamp.now(tz=ZoneInfo('America/New_York'))
         }
 
-    # ==========================================================
-    # 🚨 [V29.03 NEW] AVWAP 데이터 영속성 캡슐화 라우팅
-    # ==========================================================
     def load_avwap_state(self, ticker, now_est):
         if hasattr(self.v_avwap_plugin, 'load_state'):
             return self.v_avwap_plugin.load_state(ticker, now_est)
@@ -155,10 +204,26 @@ class InfiniteStrategy:
     def fetch_avwap_macro(self, base_ticker):
         return self.v_avwap_plugin.fetch_macro_context(base_ticker)
 
-    # 🚨 [V28.51 팩트 교정] AVWAP 스나이퍼 크래시 쉴드: 조기퇴근 모드의 
-    # early_exit_mode 및 early_target_profit 인젝션 100% 개통 완료.
-    def get_avwap_decision(self, base_ticker, exec_ticker, base_curr_p, exec_curr_p, base_day_open, avg_price, qty, alloc_cash, context_data, df_1min_base, now_est, early_exit_mode=False, early_target_profit=0.025):
+    def get_avwap_decision(self, base_ticker, exec_ticker, base_curr_p, exec_curr_p, base_day_open, avg_price, qty, alloc_cash, context_data, df_1min_base, now_est, avwap_state=None, regime_data=None, **kwargs):
+        
+        if regime_data is not None:
+            omni_filter = self.apply_omni_matrix_filter(exec_ticker, qty, regime_data)
+            if not omni_filter["allow_buy"] and qty == 0:
+                return {
+                    "action": "HOLD",
+                    "qty": 0,
+                    "price": 0.0,
+                    "msg": f"⛔ AVWAP 셧다운: {omni_filter['msg']}"
+                }
+
+        # 🚨 [V43.00 복원] config에서 커스텀 파라미터(목표 수익률, 근무 모드)를 동적으로 추출하여 플러그인에 전달
+        target_profit = getattr(self.cfg, 'get_avwap_target_profit', lambda x: 4.0)(exec_ticker)
+        is_multi_strike = getattr(self.cfg, 'get_avwap_multi_strike_mode', lambda x: False)(exec_ticker)
+
+        # 🚨 [V44.03] 스나이퍼에서 수신한 체력 스캔 팩트 파라미터(**kwargs) 플러그인으로 바이패스
         return self.v_avwap_plugin.get_decision(
-            base_ticker, exec_ticker, base_curr_p, exec_curr_p, base_day_open, avg_price, qty, alloc_cash, context_data, df_1min_base, now_est,
-            early_exit_mode=early_exit_mode, early_target_profit=early_target_profit
+            base_ticker=base_ticker, exec_ticker=exec_ticker, base_curr_p=base_curr_p, exec_curr_p=exec_curr_p, 
+            base_day_open=base_day_open, avwap_avg_price=avg_price, avwap_qty=qty, avwap_alloc_cash=alloc_cash, 
+            context_data=context_data, df_1min_base=df_1min_base, now_est=now_est, avwap_state=avwap_state,
+            target_profit=target_profit, is_multi_strike=is_multi_strike, **kwargs
         )

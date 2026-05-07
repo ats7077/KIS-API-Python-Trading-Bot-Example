@@ -1,25 +1,27 @@
+# NEW: [스마트 홀딩(익절 한정) 덤핑 락온 이식]
 # ==========================================================
-# [strategy_v_avwap.py]
+# FILE: strategy_v_avwap.py
+# ==========================================================
+# [strategy_v_avwap.py] - 🌟 V47.00 앱솔루트 팩트 교정 🌟
 # 💡 V-REV 하이브리드 전용 차세대 AVWAP 스나이퍼 플러그인 (Dual-Referencing)
-# ⚠️ 초공격형 당일 청산 암살자 (V-REV 잉여 현금 100% 몰빵 & -3% 하드스탑)
-# ⚠️ 옵션 B 아키텍처: 기초자산(SOXX) 시그널 스캔 + 파생상품(SOXL) 미시구조 타격
-# 🚨 [V28.50 NEW] 사용자 맞춤형 조기 퇴근(Early Exit) 듀얼 코어 이식 완비
-# 🚨 [PEP 8 포맷팅 패치] 미사용 변수(time_0930) 소각 (Ruff F841 교정 완료)
-# 🚨 [V25.23 디커플링] KIS API 하드코딩 종속성 적출 및 범용 1분봉 컬럼 정규화 완비
-# 🚨 [V27.06 긴급 수술] NameError (#ffffff) 소각 및 ZeroDivision 방어막 구축
-# 🚨 [V27.07 그랜드 수술] 코파일럿 합작 - 20MA NaN 붕괴, VWAP 침묵, 10시 누수, 소수점 주문 4대 맹점 전면 철거
-# 🚨 [V27.16 핫픽스] 20MA 시차 왜곡 차단, RVOL 정수 파싱, 소수점 매도 차단 및 ZeroDivision 영구 차단 완비
-# 🚨 [V29.03 팩트 수술] 기억상실(Amnesia) 엣지 케이스 방어막: 서버 재부팅 시 AVWAP 상태(매수/셧다운)가 증발하는 현상을 원천 차단하기 위해 파일 기반 영속성 저장(Persistence) 엔진 탑재.
-# MODIFIED: [V29.12 핫픽스] 스케줄러 매개변수 불일치 런타임 붕괴 원천 차단 및 Safe Casting 다형성(Polymorphism) 지원
-# MODIFIED: [V29.13 핫픽스] 데이터 기아(Data Starvation) 방어막 이식 및 다형성 맵핑 2차 강화
-# NEW: [UI 패치] 텔레그램 /sync 실시간 레이더 렌더링을 위한 팩트 데이터(gap_pct) 반환 패키징
-# 🚨 [V30.05 팩트 수술] AVWAP 암살자 모니터링 타임라인 1시간 연장 (14:00 -> 15:00 EST) 및 조건문 교정 완비.
-# MODIFIED: [V30.09 핫픽스] pytz 영구 적출 및 ZoneInfo('America/New_York') 이식으로 LMT 버그 차단
+# 🚨 MODIFIED: [V47.00 하이킨아시 듀얼 모멘텀 추세 시스템 락온]
+# - 04:00 EST 프리마켓 1분봉 파서 스캔 확장 및 데이터 기아 해체 (open 컬럼)
+# - 하이킨아시 5min 리샘플링 기반 3대 진입 조건(원웨이, 모멘텀, 체력) 락온
+# - 15:00 EST 오버나이트 존버(Hold) 모드 이식 및 투트랙 엑시트 전면 개조
+# - 10:00 EST 단판 승부 및 조기퇴근(단일 출장) 셧다운 로직 영구 소각 (무한 스캔 개방)
+# 🚨 MODIFIED: [단판승부 실전 테스트] 롱(Long) 한정 제1조건/제3조건 강제 바이패스 및 매수/매도 1회 락온
+# 🚨 MODIFIED: [단판승부 실전 테스트] 체력 고갈 시점에 하이킨아시 역추세(음봉) 결합 시 덤핑
+# 🚨 MODIFIED: [단판승부 실전 테스트] 15:00 EST 수익/손실 불문 무조건 전량 덤핑 (존버 소각)
+# 🚨 MODIFIED: [V53.01 오프닝 휩소 방어] 프리마켓 개장 직후 10분(04:10 EST까지) 진입 차단 안전 마진 이식
+# 🚨 MODIFIED: [V53.02 숏(Short) 안전장치 락온] 인버스(SOXS) 진입 시 제1조건(원웨이 하락) 100% 강제 검증 (Bypass 차단)
+# 🚨 MODIFIED: [V53.03 체력 동결 락온] 진입 시 당일 진폭이 ATR5를 초과(고갈)한 경우 신규 진입 영구 동결
+# 🚨 MODIFIED: [V53.04 스마트 홀딩 락온] 체력고갈+역추세 시 '손절'이면 15:00까지 Hold, '익절'일 때만 즉각 덤핑
+# 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
+# 제1헌법: 동기 I/O 100% 비동기 격리.
+# 제3헌법: 타임존 단일 소스 락온 (EST 100%).
 # ==========================================================
 import logging
 import datetime
-# MODIFIED: [LMT 오차 방어를 위해 pytz를 적출하고 ZoneInfo 도입]
-# import pytz
 from zoneinfo import ZoneInfo
 import math
 import yfinance as yf
@@ -31,37 +33,58 @@ import tempfile
 class VAvwapHybridPlugin:
     def __init__(self):
         self.plugin_name = "AVWAP_HYBRID_DUAL"
-        self.leverage = 3.0             
-        self.base_stop_loss_pct = 0.01  
-        self.base_target_pct = 0.01     
-        self.base_dip_buy_pct = 0.0067  
-        
-    # ==========================================================
-    # 🚨 [V29.03 NEW] AVWAP 상태 영속성(Persistence) 듀얼 캐시 엔진
-    # 서버 다운, 데몬 재시작 등에도 암살자가 타점과 셧다운 여부를 기억하도록 박제
-    # ==========================================================
+        self.leverage = 3.0      
+
+    def _get_logical_date_str(self, now_est):
+        if now_est.hour < 4 or (now_est.hour == 4 and now_est.minute < 4):
+            target_date = now_est - datetime.timedelta(days=1)
+        else:
+            target_date = now_est
+        return target_date.strftime('%Y%m%d')
+
     def _get_state_file(self, ticker, now_est):
-        today_str = now_est.strftime('%Y%m%d')
-        return f"data/avwap_state_{today_str}_{ticker}.json"
+        return f"data/avwap_state_persistent_{ticker}.json"
 
     def load_state(self, ticker, now_est):
         file_path = self._get_state_file(ticker, now_est)
+        today_str = self._get_logical_date_str(now_est)
+
         if os.path.exists(file_path):
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    data = json.load(f)
+
+                    if data.get('date') != today_str:
+                        qty = data.get('qty', 0)
+                        if qty > 0:
+                            data['bought'] = True
+                            data['shutdown'] = False
+                        else:
+                            data['qty'] = 0
+                            data['avg_price'] = 0.0
+                            data['shutdown'] = False
+                            data['strikes'] = 0
+                            data['bought'] = False
+                            data['daily_bought_qty'] = 0
+                            data['daily_sold_qty'] = 0
+
+                        data['date'] = today_str
+                        self.save_state(ticker, now_est, data)
+
+                    return data
             except Exception:
                 pass
-        return {}
+        return {"executed_buy": False, "shutdown": False, "strikes": 0, "qty": 0, "avg_price": 0.0, "daily_bought_qty": 0, "daily_sold_qty": 0}
 
     def save_state(self, ticker, now_est, state_data):
         file_path = self._get_state_file(ticker, now_est)
+        state_data['date'] = self._get_logical_date_str(now_est)
+
         try:
             dir_name = os.path.dirname(file_path)
             if dir_name and not os.path.exists(dir_name):
                 os.makedirs(dir_name, exist_ok=True)
-            
-            # 원자적(Atomic) 쓰기로 파일 깨짐 원천 차단
+
             fd, temp_path = tempfile.mkstemp(dir=dir_name, text=True)
             with os.fdopen(fd, 'w', encoding='utf-8') as f:
                 json.dump(state_data, f, ensure_ascii=False, indent=4)
@@ -74,113 +97,177 @@ class VAvwapHybridPlugin:
     def fetch_macro_context(self, base_ticker):
         try:
             tkr = yf.Ticker(base_ticker)
-            df_daily = tkr.history(period="2mo", interval="1d", timeout=5)
+            df_1m = tkr.history(period="5d", interval="1m", prepost=False, timeout=5)
+
+            prev_vwap = 0.0
+            prev_close = 0.0
+
+            est = ZoneInfo('America/New_York')
+            now_est = datetime.datetime.now(est)
+
+            if now_est.hour < 4 or (now_est.hour == 4 and now_est.minute < 5):
+                today_est = (now_est - datetime.timedelta(days=1)).date()
+            else:
+                today_est = now_est.date()
+
+            if not df_1m.empty:
+                if df_1m.index.tz is None:
+                    df_1m.index = df_1m.index.tz_localize('UTC').tz_convert(est)
+                else:
+                    df_1m.index = df_1m.index.tz_convert(est)
+
+                df_past_1m = df_1m[df_1m.index.date < today_est].copy()
+
+                if not df_past_1m.empty:
+                    last_date = df_past_1m.index.date[-1]
+                    df_prev_day = df_past_1m[df_past_1m.index.date == last_date].copy()
+
+                    df_prev_day = df_prev_day.between_time('09:30', '15:59')
+
+                    if not df_prev_day.empty:
+                        prev_close = float(df_prev_day['Close'].iloc[-1])
+
+                        df_prev_day['tp'] = (df_prev_day['High'].astype(float) + df_prev_day['Low'].astype(float) + df_prev_day['Close'].astype(float)) / 3.0
+                        df_prev_day['vol'] = df_prev_day['Volume'].astype(float)
+                        df_prev_day['vol_tp'] = df_prev_day['tp'] * df_prev_day['vol']
+
+                        cum_vol = df_prev_day['vol'].sum()
+                        if cum_vol > 0:
+                            prev_vwap = df_prev_day['vol_tp'].sum() / cum_vol
+                        else:
+                            prev_vwap = prev_close
+
             df_30m = tkr.history(period="60d", interval="30m", timeout=5)
+            avg_vol_20 = 0.0
 
-            today_est = datetime.datetime.now(ZoneInfo('America/New_York')).date()
-            if df_daily.index.tz is None:
-                df_daily.index = df_daily.index.tz_localize('UTC').tz_convert('America/New_York')
-            else:
-                df_daily.index = df_daily.index.tz_convert('America/New_York')
+            if not df_30m.empty:
+                if df_30m.index.tz is None:
+                    df_30m.index = df_30m.index.tz_localize('UTC').tz_convert(est)
+                else:
+                    df_30m.index = df_30m.index.tz_convert(est)
 
-            df_past = df_daily[df_daily.index.date < today_est]
+                first_30m = df_30m[df_30m.index.time == datetime.time(9, 30)]
+                past_first_30m = first_30m[first_30m.index.date < today_est]
 
-            if df_past.empty or len(df_past) < 20 or df_30m.empty:
-                return None
+                if len(past_first_30m) >= 20:
+                    avg_vol_20 = float(past_first_30m['Volume'].tail(20).mean())
+                elif len(past_first_30m) > 0:
+                    avg_vol_20 = float(past_first_30m['Volume'].mean())
 
-            prev_close = float(df_past['Close'].iloc[-1])
-            ma_20 = float(df_past['Close'].rolling(window=20).mean().iloc[-1])
-
-            if math.isnan(ma_20) or math.isnan(prev_close):
-                return None
-
-            if df_30m.index.tz is None:
-                df_30m.index = df_30m.index.tz_localize('UTC').tz_convert('America/New_York')
-            else:
-                df_30m.index = df_30m.index.tz_convert('America/New_York')
-
-            first_30m = df_30m[df_30m.index.time == datetime.time(9, 30)]
-            past_first_30m = first_30m[first_30m.index.date < today_est]
-            
-            if len(past_first_30m) >= 20:
-                avg_vol_20 = float(past_first_30m['Volume'].tail(20).mean())
-            elif len(past_first_30m) > 0:
-                avg_vol_20 = float(past_first_30m['Volume'].mean())
-            else:
-                avg_vol_20 = 0.0
+            if prev_vwap == 0.0:
+                prev_vwap = prev_close
 
             return {
                 "prev_close": prev_close,
-                "ma_20": ma_20,
+                "prev_vwap": prev_vwap,
                 "avg_vol_20": avg_vol_20
             }
-            
+
         except Exception as e:
             logging.error(f"🚨 [V_AVWAP] YF 기초자산 매크로 컨텍스트 추출 실패 ({base_ticker}): {e}")
             return None
 
-    def get_decision(self, base_ticker=None, exec_ticker=None, base_curr_p=0.0, exec_curr_p=0.0, base_day_open=0.0, avwap_avg_price=0.0, avwap_qty=0, avwap_alloc_cash=0.0, context_data=None, df_1min_base=None, now_est=None, early_exit_mode=False, early_target_profit=0.025, **kwargs):
-        
+    def get_decision(self, base_ticker=None, exec_ticker=None, base_curr_p=0.0, exec_curr_p=0.0, base_day_open=0.0, avwap_avg_price=0.0, avwap_qty=0, avwap_alloc_cash=0.0, context_data=None, df_1min_base=None, now_est=None, avwap_state=None, **kwargs):
+
         df_1min_base = df_1min_base if df_1min_base is not None else kwargs.get('base_df')
         avwap_qty = avwap_qty if avwap_qty != 0 else kwargs.get('current_qty', 0)
-        
+
         base_curr_p = base_curr_p if base_curr_p > 0 else kwargs.get('base_curr_p', 0.0)
         exec_curr_p = exec_curr_p if exec_curr_p > 0 else kwargs.get('exec_curr_p', 0.0)
         base_day_open = base_day_open if base_day_open > 0 else kwargs.get('base_day_open', 0.0)
         avwap_avg_price = avwap_avg_price if avwap_avg_price > 0 else kwargs.get('avwap_avg_price', kwargs.get('avg_price', 0.0))
         avwap_alloc_cash = avwap_alloc_cash if avwap_alloc_cash > 0 else kwargs.get('alloc_cash', kwargs.get('avwap_alloc_cash', 0.0))
-        
+
+        user_target_pct = kwargs.get('target_profit', 4.0)
+        target_mode = kwargs.get('target_mode', 'AUTO')
+
+        atr5 = kwargs.get('atr5', 0.0)
+        day_high = kwargs.get('day_high', 0.0)
+        day_low = kwargs.get('day_low', 0.0)
+        prev_c = kwargs.get('prev_close', 0.0)
+
         if now_est is None:
             now_est = datetime.datetime.now(ZoneInfo('America/New_York'))
-            
+
         if base_curr_p <= 0.0 and df_1min_base is not None and not df_1min_base.empty:
             try: base_curr_p = float(df_1min_base['close'].iloc[-1])
             except Exception: pass
-            
+
+        avwap_state = avwap_state or {}
         curr_time = now_est.time()
-        
-        time_1000 = datetime.time(10, 0)
-        # 🚨 [V30.05 팩트 수술] 매수 윈도우 시간 연장 (14:00 -> 15:00)
+
+        # 🚨 MODIFIED: [V53.01] 오프닝 휩소 방어를 위한 10분 안전 마진 락온
+        time_0410 = datetime.time(4, 10)
         time_1500 = datetime.time(15, 0)
-        time_1430 = datetime.time(14, 30)
-        time_1555 = datetime.time(15, 55)
 
         base_vwap = base_curr_p
-        base_current_30m_vol = 0.0
         vwap_success = False 
-        
+
+        base_reg_high = base_curr_p
+        base_reg_low = base_curr_p
+
+        is_inverse = exec_ticker.upper() in ["SOXS", "SQQQ", "SPXU"]
+
+        ha_2_bullish_no_lower = False
+        ha_2_bearish_no_upper = False
+
         if df_1min_base is not None and not df_1min_base.empty:
             try:
                 df = df_1min_base.copy()
-                df['tp'] = (df['high'].astype(float) + df['low'].astype(float) + df['close'].astype(float)) / 3.0
-                df['vol'] = df['volume'].astype(float)
-                df['vol_tp'] = df['tp'] * df['vol']
-                
-                cum_vol = df['vol'].sum()
-                if cum_vol > 0:
-                    base_vwap = df['vol_tp'].sum() / cum_vol
-                    vwap_success = True
-                
-                if 'time_est' in df.columns:
-                    def _to_hhmiss_int(t):
-                        if isinstance(t, (datetime.time, datetime.datetime)):
-                            return t.hour * 10000 + t.minute * 100 + t.second
-                        if isinstance(t, pd.Timestamp):
-                            return t.hour * 10000 + t.minute * 100 + t.second
-                        s = str(t).replace(':', '').replace(' ', '')[:6].zfill(6)
-                        try:
-                            return int(s)
-                        except ValueError:
-                            return -1
 
-                    df['time_int'] = df['time_est'].apply(_to_hhmiss_int)
-                    mask_30m = (df['time_int'] >= 93000) & (df['time_int'] < 100000)
-                    base_current_30m_vol = df.loc[mask_30m, 'vol'].sum()
+                # 🚨 [V47.00] 04:00~15:59 EST 구간 강제 확장 및 프리마켓 데이터 기아 방어
+                if 'time_est' in df.columns:
+                    df = df[(df['time_est'] >= '040000') & (df['time_est'] <= '155900')]
+
+                if not df.empty:
+                    df['tp'] = (df['high'].astype(float) + df['low'].astype(float) + df['close'].astype(float)) / 3.0
+                    df['vol'] = df['volume'].astype(float)
+                    df['vol_tp'] = df['tp'] * df['vol']
+
+                    cum_vol = df['vol'].sum()
+                    if cum_vol > 0:
+                        base_vwap = df['vol_tp'].sum() / cum_vol
+                        vwap_success = True
+
+                    # 하이킨아시 5min 리샘플링 구현 (오차 허용 0.01$ 락온)
+                    df['datetime'] = pd.to_datetime(df.index)
+                    df.set_index('datetime', inplace=True)
+                    df_5m = df.resample('5min', label='left', closed='left').agg({
+                        'open': 'first',
+                        'high': 'max',
+                        'low': 'min',
+                        'close': 'last',
+                        'volume': 'sum'
+                    }).dropna()
+
+                    if not df_5m.empty:
+                        df_5m['HA_Close'] = (df_5m['open'].astype(float) + df_5m['high'].astype(float) + df_5m['low'].astype(float) + df_5m['close'].astype(float)) / 4.0
+                        ha_open = []
+                        for i in range(len(df_5m)):
+                            if i == 0:
+                                ha_open.append((float(df_5m['open'].iloc[i]) + float(df_5m['close'].iloc[i])) / 2.0)
+                            else:
+                                ha_open.append((ha_open[i-1] + float(df_5m['HA_Close'].iloc[i-1])) / 2.0)
+
+                        df_5m['HA_Open'] = pd.Series(ha_open, index=df_5m.index)
+                        df_5m['HA_High'] = df_5m[['high', 'HA_Open', 'HA_Close']].max(axis=1)
+                        df_5m['HA_Low'] = df_5m[['low', 'HA_Open', 'HA_Close']].min(axis=1)
+
+                        # 0.01$ 갭 필터링
+                        df_5m['No_Lower_Wick'] = (df_5m['HA_Open'] - df_5m['HA_Low']) <= 0.01
+                        df_5m['No_Upper_Wick'] = (df_5m['HA_High'] - df_5m['HA_Open']) <= 0.01
+                        df_5m['Is_Bullish'] = df_5m['HA_Close'] >= df_5m['HA_Open']
+                        df_5m['Is_Bearish'] = df_5m['HA_Close'] < df_5m['HA_Open']
+
+                        if len(df_5m) >= 2:
+                            last_2 = df_5m.tail(2)
+                            ha_2_bullish_no_lower = last_2['Is_Bullish'].all() and last_2['No_Lower_Wick'].all()
+                            ha_2_bearish_no_upper = last_2['Is_Bearish'].all() and last_2['No_Upper_Wick'].all()
+
             except Exception as e:
-                logging.error(f"🚨 [V_AVWAP] 기초자산 1분봉 VWAP 연산 실패: {e}")
+                logging.error(f"🚨 [V_AVWAP] 기초자산 HA 연산 실패: {e}")
 
         def _build_res(action, reason, qty=0, target_price=0.0):
-            gap_pct = ((base_curr_p - base_vwap) / base_vwap * 100.0) if base_vwap > 0 else 0.0
             return {
                 'action': action,
                 'reason': reason,
@@ -188,65 +275,140 @@ class VAvwapHybridPlugin:
                 'target_price': target_price,
                 'vwap': base_vwap,
                 'base_curr_p': base_curr_p,
-                'gap_pct': gap_pct
+                'prev_vwap': context_data.get('prev_vwap', 0.0) if context_data else 0.0
             }
 
         if not vwap_success and avwap_qty == 0:
             return _build_res('WAIT', 'VWAP_데이터_결측_동결')
 
         safe_qty = int(math.floor(float(avwap_qty)))
+
+        # ---------------------------------------------------------
+        # 1. 매도 (보유 중일 때) 로직 - 15:00 무조건 덤핑 & 스마트 홀딩 익절 덤핑
+        # ---------------------------------------------------------
         if safe_qty > 0:
             safe_avg = avwap_avg_price if avwap_avg_price > 0 else exec_curr_p
-            
-            if safe_avg <= 0:
-                logging.error("🚨 [V_AVWAP] safe_avg <= 0: 가격 데이터 결측, 하드스탑 강제 집행")
-                return _build_res('SELL', 'CORRUPT_PRICE_HARD_STOP', qty=safe_qty, target_price=0.0)
-                
-            exec_return = (exec_curr_p - safe_avg) / safe_avg
-            base_equivalent_return = exec_return / self.leverage
-            
-            if base_equivalent_return <= -self.base_stop_loss_pct:
-                return _build_res('SELL', 'HARD_STOP_DUAL', qty=safe_qty, target_price=0.0)
-            
-            if early_exit_mode and (exec_return >= early_target_profit):
-                return _build_res('SELL', f'EARLY_PROFIT_TAKE_DUAL_{early_target_profit*100:.1f}%', qty=safe_qty, target_price=0.0)
 
-            if curr_time >= time_1555:
-                return _build_res('SELL', 'TIME_STOP', qty=safe_qty, target_price=0.0)
-                
-            if vwap_success and curr_time >= time_1430 and base_curr_p >= base_vwap * (1 + self.base_target_pct):
-                return _build_res('SELL', 'SQUEEZE_TARGET_DUAL', qty=safe_qty, target_price=0.0)
-                
+            if safe_avg <= 0:
+                return _build_res('SELL', 'CORRUPT_PRICE_EMERGENCY_DUMP(조기퇴근)', qty=safe_qty, target_price=exec_curr_p)
+
+            # 🚨 MODIFIED: [단판승부 테스트] 15:00 EST 도달 시 수익/손실 불문 무조건 전량 팩트 덤핑 (오버나이트 소각)
+            if curr_time >= time_1500:
+                avwap_state["shutdown"] = True
+                self.save_state(exec_ticker, now_est, avwap_state)
+                return _build_res('SELL', '15:00_도달_당일교전종료_무조건덤핑(조기퇴근)', qty=safe_qty, target_price=exec_curr_p)
+
+            # 실시간 순수익 상태 연산
+            exec_return = (exec_curr_p - safe_avg) / safe_avg
+            # 마찰비용(fee)을 임의로 0.07%로 잡아 순수익 여부 판별 (백테스트와 동일 로직)
+            FEE_RATE = 0.0007
+            net_mult = (exec_curr_p * (1.0 - FEE_RATE)) / (safe_avg * (1.0 + FEE_RATE))
+            is_profitable = (net_mult - 1.0) > 0
+
+            # 체력 고갈 판별
+            actual_gap_dollar = day_high - day_low
+            actual_gap_pct = (actual_gap_dollar / prev_c) * 100.0 if prev_c > 0 else 0.0
+            rem_5_pct = atr5 - actual_gap_pct
+            is_stamina_exhausted = (rem_5_pct < 1.0) # 1.0% 미만 시 고갈로 판단
+
+            # 🚨 NEW: [V53.04 스마트 홀딩 락온] 체력 고갈 + 역추세 발생 시 '익절 구간'일 때만 즉각 덤핑 (손절 시 15:00까지 Hold)
+            if target_mode == "AUTO":
+                if not is_inverse and ha_2_bearish_no_upper and is_stamina_exhausted:
+                    if is_profitable:
+                        return _build_res('SELL', '체력고갈_및_역추세(음봉2연속)_익절구간_즉각덤핑(조기퇴근)', qty=safe_qty, target_price=exec_curr_p)
+                elif is_inverse and ha_2_bullish_no_lower and is_stamina_exhausted:
+                    if is_profitable:
+                        return _build_res('SELL', '체력고갈_및_역추세(양봉2연속)_익절구간_즉각덤핑(조기퇴근)', qty=safe_qty, target_price=exec_curr_p)
+            else:
+                # MANUAL 모드 사용자 설정 목표 청산
+                if exec_return >= (user_target_pct / 100.0):
+                    return _build_res('SELL', f'MANUAL_목표달성(+{user_target_pct:.1f}%)_지정가익절(조기퇴근)', qty=safe_qty, target_price=exec_curr_p)
+
             return _build_res('HOLD', '보유중_관망')
 
+        # ---------------------------------------------------------
+        # 2. 매수 (포지션 0주 일 때) 로직 - 배타적 갭 필터 및 모멘텀 스캔
+        # ---------------------------------------------------------
         if not context_data:
             return _build_res('WAIT', '매크로_데이터_수집대기')
 
-        if base_day_open <= 0:
-            return _build_res('WAIT', '시가_데이터_결측_대기')
+        if avwap_state.get('shutdown', False):
+            return _build_res('WAIT', '당일영구동결_상태(신규진입금지)')
 
-        prev_c = context_data['prev_close']
-        ma_20 = context_data['ma_20']
-        avg_vol_20 = context_data['avg_vol_20']
+        # 🚨 [V45.00 동적 킬 스위치] 정규장(09:30 EST~) 횡보장 스캔 락온
+        if df_1min_base is not None and not df_1min_base.empty:
+            df_reg = df_1min_base[df_1min_base['time_est'] >= '093000']
+            if not df_reg.empty:
+                base_reg_high = float(df_reg['high'].max())
+                base_reg_low = float(df_reg['low'].min())
+                base_prev_c_for_kill = float(context_data.get('prev_close', 0.0))
+                if base_prev_c_for_kill > 0 and base_reg_high > base_prev_c_for_kill and base_reg_low < base_prev_c_for_kill:
+                    avwap_state["shutdown"] = True
+                    self.save_state(exec_ticker, now_est, avwap_state)
+                    return _build_res('SHUTDOWN', '정규장_횡보장_감지(Zero-Line_관통)_신규진입_영구동결')
 
-        is_bull_regime = (prev_c > ma_20) and (base_day_open > ma_20)
-        if not is_bull_regime:
-            return _build_res('SHUTDOWN', '기초자산_역배열_하락장_영구동결')
+        # 🚨 MODIFIED: [V53.01] 오프닝 휩소 방어를 위한 10분 안전 마진 적용
+        if curr_time < time_0410:
+            return _build_res('WAIT', '04:10_이전_오프닝_휩소_방어(10분_안전마진_대기)')
+
+        if curr_time >= time_1500:
+            avwap_state["shutdown"] = True
+            self.save_state(exec_ticker, now_est, avwap_state)
+            return _build_res('SHUTDOWN', '15:00_도달_신규진입_영구동결')
+
+        # 필수 데이터 결측 검증
+        base_prev_c = float(context_data.get('prev_close', 0.0))
+        prev_vwap = float(context_data.get('prev_vwap', 0.0))
+        base_day_high = kwargs.get('base_day_high', 0.0)
+        base_day_low = kwargs.get('base_day_low', 0.0)
+
+        if prev_c <= 0 or atr5 <= 0 or day_high <= 0 or day_low <= 0 or exec_curr_p <= 0 or base_vwap <= 0 or prev_vwap <= 0:
+            return _build_res('WAIT', '진입_평가용_필수데이터_결측_대기')
             
-        if base_day_open <= prev_c * (1 - self.base_dip_buy_pct):
-            return _build_res('SHUTDOWN', '기초자산_시가_갭하락_영구동결')
-            
-        if curr_time >= time_1000:
-            if avg_vol_20 > 0 and base_current_30m_vol >= (avg_vol_20 * 2.0) and base_curr_p < base_vwap:
-                return _build_res('SHUTDOWN', '기초자산_RVOL_스파이크_영구동결')
-                
-        # 🚨 [V30.05 팩트 수술] 매수 윈도우 스캔 구간 조건문 교정
-        if time_1000 <= curr_time <= time_1500:
-            if base_curr_p <= base_vwap * (1 - self.base_dip_buy_pct):
-                if exec_curr_p > 0 and avwap_alloc_cash > 0:
-                    buy_qty = int(math.floor(avwap_alloc_cash / exec_curr_p))
-                    if buy_qty > 0:
-                        return _build_res('BUY', 'VWAP_BOUNCE_DUAL', qty=buy_qty, target_price=exec_curr_p)
-                return _build_res('WAIT', '예산_부족_관망')
-                    
-        return _build_res('WAIT', '타점_대기중')
+        # 🚨 NEW: [V53.03] 체력 고갈 시 신규 진입 100% 영구 동결 (Daily Buy-Lock) 락온
+        actual_gap_dollar = day_high - day_low
+        actual_gap_pct = (actual_gap_dollar / prev_c) * 100.0 if prev_c > 0 else 0.0
+        rem_5_pct = atr5 - actual_gap_pct
+        if rem_5_pct < 1.0: # 1.0% 미만 시 고갈로 판단
+            avwap_state["shutdown"] = True
+            self.save_state(exec_ticker, now_est, avwap_state)
+            return _build_res('SHUTDOWN', 'ATR5_체력고갈_감지_당일신규진입_영구동결')
+
+        # 🚨 MODIFIED: [V53.02] 고저가 부호 일치(음수 갭 판별) 및 배타적 갭 필터 락온
+        is_neg_gap_state = False
+        if base_day_high > 0 and base_day_low > 0 and base_prev_c > 0:
+            is_neg_gap_state = (base_day_high < base_prev_c) and (base_day_low < base_prev_c)
+
+        cond1_met = False
+        if is_inverse:
+            # 숏(SOXS)은 반드시 제1조건(원웨이 하락 = 음수 갭)을 충족해야만 진입 허용
+            cond1_met = is_neg_gap_state
+        else:
+            # 롱(SOXL)은 숏 진입 조건(음수 갭)이 충족되었을 때 진입 전면 차단 (배타적 락온)
+            cond1_met = not is_neg_gap_state
+
+        # 2. 하이킨아시 모멘텀
+        cond2_met = False
+        if not is_inverse:
+            cond2_met = (base_vwap > prev_vwap) and ha_2_bullish_no_lower
+        else:
+            cond2_met = (base_vwap < prev_vwap) and ha_2_bearish_no_upper
+
+        # 3. 잔여 체력 1% 이상
+        # 🚨 MODIFIED: [단판승부 테스트] 매수 시 체력 조건은 바이패스 락온. 체력은 위에서 영구 동결로 사전 필터링됨.
+        cond3_met = True
+
+        if cond1_met and cond2_met and cond3_met:
+            if avwap_alloc_cash > 0:
+                # 🚨 [V47.00] 암살자 현금 50% 락온 상태에서 거절 방어용 95% 마진 체결
+                safe_budget = avwap_alloc_cash * 0.95
+                buy_qty = int(math.floor(safe_budget / exec_curr_p))
+                if buy_qty > 0:
+                    return _build_res('BUY', '하이킨아시_배타적갭필터_통과_타격개시', qty=buy_qty, target_price=exec_curr_p)
+            return _build_res('WAIT', '가용예산부족_대기')
+        else:
+            fail_reasons = []
+            if not cond1_met: fail_reasons.append("원웨이/배타적갭필터미달")
+            if not cond2_met: fail_reasons.append("HA모멘텀미달")
+            if not cond3_met: fail_reasons.append("체력미달")
+            return _build_res('WAIT', f'진입조건대기({",".join(fail_reasons)})')

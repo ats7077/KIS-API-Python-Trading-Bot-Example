@@ -1,27 +1,10 @@
 # ==========================================================
-# [config.py] - 🌟 100% 통합 완성본 🌟 (Part 1)
-# ⚠️ V_REV 도입에 따른 P매매 잔재 완벽 소각 버전
-# 💡 [V24.10 수술] 동적 에스크로 락다운 깃발(Flag) 제어 로직 추가
-# 💡 [V25.00 수술] AVWAP 하이브리드 전술 상태 저장(캐싱) 파일 경로 및 함수 이식
-# 🚨 [V25.19 핫픽스] 빈 장부 스캔 시 IndexError 런타임 붕괴 완벽 방어
-# 🚨 [V25.19 핫픽스] 에스크로(Escrow) 3대 관리 함수(set/add/clear) 팩트 기반 완전 구현
-# 🚀 [V26.00 승격] 수동 VWAP 시그널 모드(Manual Mode) 독립 플래그 및 캐싱 엔진 신설 탑재
-# 🚀 [V26.07 확정 순수익 렌더링 패치] 명예의 전당 및 졸업 카드 발급 시 한투 OpenAPI 왕복 수수료(0.5%) 완벽 차감 이식
-# 🚨 [V27.10 그랜드 수술] 에스크로 캐시 영구 박제(Ghost Escrow 방어), 액면분할 수학적 반올림(Banker's Rounding) 오류 교정 및 fsync 무결성 확보
-# 🚨 [V27.11 핫픽스] I/O FD 누수 방어, TOCTOU 경쟁 상태 원천 차단 래퍼 추가
-# MODIFIED: [V28.25 그랜드 수술] 수수료 하드코딩 전면 소각 및 동적 수수료(Fee) 설정 엔진 탑재
-# MODIFIED: [V28.26 타임존 락온 그랜드 수술] KST 기준 날짜 연산을 전면 폐기하고,
-# INIT 레코드 기록 및 락(Lock) 해제 등 모든 기준 시간을 EST(미국 동부)로 100% 형변환하여 
-# 타임 패러독스로 인한 스냅샷 매핑 실패 버그를 영구 소각 완료. (EC-3 방어)
-# 🚨 [V28.50 NEW] 사용자 맞춤형 AVWAP 암살자 조기 퇴근 설정(Early Exit/Target) 저장소 완비
-# MODIFIED: [V29.16 핫픽스] 마스터 스위치 및 스나이퍼 락온(Buy/Sell) 영속성 Getter/Setter 팩트 이식 완료
-# MODIFIED: [V30.09 핫픽스] pytz 영구 적출 및 ZoneInfo 도입으로 LMT 버그 차단 및 타임존 무결성 100% 확보
+# FILE: config.py (수술 완료)
 # ==========================================================
+
 import json
 import os
 import datetime
-# MODIFIED: [V30.09 핫픽스] LMT 오차 방어를 위해 pytz 적출 및 ZoneInfo 도입
-# import pytz
 from zoneinfo import ZoneInfo
 import math
 import time
@@ -29,7 +12,6 @@ import shutil
 import tempfile
 import pandas_market_calendars as mcal
 
-# NEW: 다중 스레드/프로세스 환경에서 락 및 에스크로 동기화 제어를 위한 모듈 임포트
 import threading
 try:
     import fcntl
@@ -41,12 +23,19 @@ try:
 except ImportError:
     VERSION_HISTORY = ["V14.x [-] 버전 기록 파일(version_history.py)을 찾을 수 없습니다."]
 
+try:
+    from vwap_data import VWAP_PROFILES
+except ImportError:
+    VWAP_PROFILES = {"SOXL": {}, "SOXS": {}}
+    print("⚠️ [경고] vwap_data.py 플러그인을 찾을 수 없습니다. (U-Curve 데이터 부재)")
+
+
 class ConfigManager:
     def __init__(self):
         self.FILES = {
             "TOKEN": "data/token.dat",
             "CHAT_ID": "data/chat_id.dat",
-            "LEDGER": "data/manual_ledger.json",    
+            "LEDGER": "data/manual_ledger.json", 
             "HISTORY": "data/manual_history.json",  
             "SPLIT": "data/split_config.json",
             "TICKER": "data/active_tickers.json",
@@ -63,12 +52,13 @@ class ConfigManager:
             "AVWAP_HYBRID_CFG": "data/avwap_hybrid.json",
             "MANUAL_VWAP_CFG": "data/manual_vwap_config.json",
             "FEE_CFG": "data/fee_config.json", 
-            "AVWAP_EARLY_EXIT_CFG": "data/avwap_early_exit.json",    
-            "AVWAP_EARLY_TARGET_CFG": "data/avwap_early_target.json",
-            # 🚨 [V29.16 수술 부위] 누락된 스나이퍼 락 및 스위치 파일 경로 이식
             "MASTER_SWITCH": "data/master_switch.json",
             "SNIPER_BUY_LOCKED": "data/sniper_buy_locked.json",
-            "SNIPER_SELL_LOCKED": "data/sniper_sell_locked.json"
+            "SNIPER_SELL_LOCKED": "data/sniper_sell_locked.json",
+            "AVWAP_MULTI_STRIKE_CFG": "data/avwap_multi_strike.json", 
+            "AVWAP_TARGET_CFG": "data/avwap_target.json", 
+            "VREV_GAP_SWITCH_CFG": "data/vrev_gap_switch.json",       
+            "VREV_GAP_THRESH_CFG": "data/vrev_gap_thresh.json"        
         }
         
         self.DEFAULT_SEED = {"SOXL": 6720.0, "TQQQ": 6720.0}
@@ -78,9 +68,16 @@ class ConfigManager:
         self.DEFAULT_COMPOUND = {"SOXL": 70.0, "TQQQ": 70.0}
         self.DEFAULT_SNIPER_MULTIPLIER = {"SOXL": 1.0, "TQQQ": 0.9}
         self.DEFAULT_FEE = {"SOXL": 0.25, "TQQQ": 0.25} 
+        self.DEFAULT_AVWAP_TARGET = {"SOXL": 4.0, "SOXS": 4.0}
         
         self._escrow_cache = {}
         self._locks_mutex = threading.Lock()
+
+    def get_vwap_profile(self, ticker: str) -> dict:
+        target_ticker = ticker.upper()
+        if target_ticker not in VWAP_PROFILES or not VWAP_PROFILES[target_ticker]:
+            raise ValueError(f"🚨 [치명적 런타임 오류] {target_ticker}의 U-Curve 데이터가 vwap_data.py에 존재하지 않습니다.")
+        return VWAP_PROFILES[target_ticker]
 
     def _atomic_update_locks(self, update_fn):
         with self._locks_mutex:
@@ -122,12 +119,12 @@ class ConfigManager:
             dir_name = os.path.dirname(filename) or '.'
             if not os.path.exists(dir_name):
                 os.makedirs(dir_name, exist_ok=True)
-                
+                 
             fd, temp_path = tempfile.mkstemp(dir=dir_name, text=True)
             with os.fdopen(fd, 'w', encoding='utf-8') as f:
                 fd = None
                 json.dump(data, f, ensure_ascii=False, indent=2)
-                f.flush()         
+                f.flush()       
                 os.fsync(f.fileno()) 
                 
             os.replace(temp_path, filename)
@@ -143,10 +140,10 @@ class ConfigManager:
 
     def _load_file(self, filename, default=None):
         if os.path.exists(filename):
-            try:
+             try:
                 with open(filename, 'r', encoding='utf-8') as f:
                     return f.read().strip()
-            except Exception as e:
+             except Exception as e:
                 print(f"⚠️ [Config] 파일 로드 에러 ({filename}): {e}")
         return default
 
@@ -198,9 +195,9 @@ class ConfigManager:
         for r in reversed(ledger):
             if r.get('ticker') == ticker:
                 if r.get('is_reverse', False):
-                    if r['side'] == 'SELL':
+                     if r['side'] == 'SELL':
                         escrow += (r['qty'] * r['price'])
-                    elif r['side'] == 'BUY':
+                     elif r['side'] == 'BUY':
                         escrow -= (r['qty'] * r['price'])
                 else:
                     break
@@ -251,11 +248,10 @@ class ConfigManager:
         self._atomic_update_locks(_update)
 
     def set_lock(self, ticker, market_type):
-        # MODIFIED: [V30.09 핫픽스] pytz 소각 및 ZoneInfo 이식
         est = ZoneInfo('America/New_York')
         today = datetime.datetime.now(est).strftime('%Y-%m-%d')
         def _update(locks):
-            locks[f"{today}_{ticker}_{market_type}"] = True
+             locks[f"{today}_{ticker}_{market_type}"] = True
         self._atomic_update_locks(_update)
 
     def reset_locks(self):
@@ -267,7 +263,6 @@ class ConfigManager:
         self._atomic_update_locks(_update)
         
     def reset_lock_for_ticker(self, ticker):
-        # MODIFIED: [V30.09 핫픽스] pytz 소각 및 ZoneInfo 이식
         est = ZoneInfo('America/New_York')
         today = datetime.datetime.now(est).strftime('%Y-%m-%d')
         def _update(locks):
@@ -277,7 +272,6 @@ class ConfigManager:
         self._atomic_update_locks(_update)
 
     def check_lock(self, ticker, market_type):
-        # MODIFIED: [V30.09 핫픽스] pytz 소각 및 ZoneInfo 이식
         est = ZoneInfo('America/New_York')
         today = datetime.datetime.now(est).strftime('%Y-%m-%d')
         locks = self._load_json(self.FILES["LOCKS"], {})
@@ -368,7 +362,6 @@ class ConfigManager:
             print(f"⚠️ [보안 차단] {ticker}의 장부 기록이 이미 존재하여 파괴적 INIT 덮어쓰기를 차단했습니다.")
             return
             
-        # MODIFIED: [V30.09 핫픽스] pytz 소각 및 ZoneInfo 이식
         est = ZoneInfo('America/New_York')
         today_str = datetime.datetime.now(est).strftime('%Y-%m-%d')
         new_id = 1 if not ledger else max(r.get('id', 0) for r in ledger) + 1
@@ -424,7 +417,7 @@ class ConfigManager:
                 exec_id = str(r.get('exec_id', ''))
                 if 'INIT' in exec_id:
                     continue
-                    
+                  
                 if r['side'] == 'BUY' and actual_buy_price > 0.0:
                     if abs(r['price'] - actual_buy_price) >= 0.01:
                         r['price'] = actual_buy_price
@@ -487,7 +480,6 @@ class ConfigManager:
 
     def set_reverse_state(self, ticker, is_active, day_count, exit_target=0.0, last_update_date=None):
         if last_update_date is None:
-            # MODIFIED: [V30.09 핫픽스] pytz 소각 및 ZoneInfo 이식
             est = ZoneInfo('America/New_York')
             last_update_date = datetime.datetime.now(est).strftime('%Y-%m-%d')
             
@@ -495,34 +487,17 @@ class ConfigManager:
         d[ticker] = {"is_active": is_active, "day_count": day_count, "exit_target": exit_target, "last_update_date": last_update_date}
         self._save_json(self.FILES["REVERSE_CFG"], d)
 
-    def update_reverse_day_if_needed(self, ticker):
-        pass
-
     def increment_reverse_day(self, ticker):
         state = self.get_reverse_state(ticker)
         if state.get("is_active"):
-            # MODIFIED: [V30.09 핫픽스] pytz 소각 및 ZoneInfo 이식
             est = ZoneInfo('America/New_York')
             now_est = datetime.datetime.now(est)
             today_est_str = now_est.strftime('%Y-%m-%d')
             
             if state.get("last_update_date") != today_est_str:
-                is_trading_day = False
-                try:
-                    nyse = mcal.get_calendar('NYSE')
-                    schedule = nyse.schedule(start_date=now_est.date(), end_date=now_est.date())
-                    is_trading_day = not schedule.empty
-                except Exception as e:
-                    print(f"⚠️ [Config] 달력 라이브러리 에러 발생. 평일 강제 개장 처리합니다: {e}")
-                    is_trading_day = now_est.weekday() < 5
-                
-                if is_trading_day:
-                    new_day = state.get("day_count", 0) + 1
-                    self.set_reverse_state(ticker, True, new_day, state.get("exit_target", 0.0), today_est_str)
-                    return True
-                else:
-                    self.set_reverse_state(ticker, True, state.get("day_count", 0), state.get("exit_target", 0.0), today_est_str)
-                    return False
+                new_day = state.get("day_count", 0) + 1
+                self.set_reverse_state(ticker, True, new_day, state.get("exit_target", 0.0), today_est_str)
+                return True
         return False
 
     def calculate_v14_state(self, ticker):
@@ -564,7 +539,7 @@ class ConfigManager:
                     
         avg_price = total_invested / holdings if holdings > 0 else 0.0
         t_val = (holdings * avg_price) / base_portion if base_portion > 0 else 0.0
-            
+             
         if holdings > 0:
             safe_denom = max(1.0, split - t_val)
             current_budget = rem_cash / safe_denom
@@ -645,6 +620,10 @@ class ConfigManager:
         
         return new_hist, added_seed
 
+    # MODIFIED: [V44.45 맹점 1 수술] get_history 메서드 누락 팩트 복구로 명예의 전당 런타임 붕괴 영구 차단
+    def get_history(self):
+        return self._load_json(self.FILES["HISTORY"], [])
+
     def get_full_version_history(self):
         return VERSION_HISTORY
 
@@ -661,9 +640,6 @@ class ConfigManager:
                 return latest_entry.split(' ')[0] 
         return "V14.x"
 
-    def get_history(self):
-        return self._load_json(self.FILES["HISTORY"], [])
-
     def get_seed(self, t): return float(self._load_json(self.FILES["SEED_CFG"], self.DEFAULT_SEED).get(t, 6720.0))
     def set_seed(self, t, v): 
         d = self._load_json(self.FILES["SEED_CFG"], self.DEFAULT_SEED)
@@ -676,8 +652,13 @@ class ConfigManager:
         d[t] = v
         self._save_json(self.FILES["COMPOUND_CFG"], d)
 
-    def get_version(self, t): return self._load_json(self.FILES["VERSION_CFG"], self.DEFAULT_VERSION).get(t, "V14")
+    def get_version(self, t): 
+        val = self._load_json(self.FILES["VERSION_CFG"], self.DEFAULT_VERSION).get(t, self.DEFAULT_VERSION.get(t, "V14"))
+        if t == "TQQQ": return "V14"
+        return val
+        
     def set_version(self, t, v):
+        if t == "TQQQ": v = "V14"
         d = self._load_json(self.FILES["VERSION_CFG"], self.DEFAULT_VERSION)
         d[t] = v
         self._save_json(self.FILES["VERSION_CFG"], d)
@@ -719,29 +700,38 @@ class ConfigManager:
         d[ticker] = bool(v)
         self._save_json(self.FILES["MANUAL_VWAP_CFG"], d)
 
-    # ==========================================================
-    # 🚨 [V28.50 NEW] AVWAP 암살자 조기 퇴근 듀얼 코어 Getter/Setter
-    # ==========================================================
-    def get_avwap_early_exit_mode(self, ticker): 
-        return self._load_json(self.FILES["AVWAP_EARLY_EXIT_CFG"], {}).get(ticker, False)
+    def get_avwap_multi_strike_mode(self, ticker): 
+        return self._load_json(self.FILES.get("AVWAP_MULTI_STRIKE_CFG", "data/avwap_multi_strike.json"), {}).get(ticker, False)
         
-    def set_avwap_early_exit_mode(self, ticker, v):
-        d = self._load_json(self.FILES["AVWAP_EARLY_EXIT_CFG"], {})
+    def set_avwap_multi_strike_mode(self, ticker, v):
+        d = self._load_json(self.FILES.get("AVWAP_MULTI_STRIKE_CFG", "data/avwap_multi_strike.json"), {})
         d[ticker] = bool(v)
-        self._save_json(self.FILES["AVWAP_EARLY_EXIT_CFG"], d)
+        self._save_json(self.FILES.get("AVWAP_MULTI_STRIKE_CFG", "data/avwap_multi_strike.json"), d)
 
-    def get_avwap_early_target(self, ticker): 
-        # 기본값 2.5(%) 로 설정
-        return float(self._load_json(self.FILES["AVWAP_EARLY_TARGET_CFG"], {}).get(ticker, 2.5))
+    def get_avwap_target_profit(self, ticker): 
+        return float(self._load_json(self.FILES.get("AVWAP_TARGET_CFG", "data/avwap_target.json"), self.DEFAULT_AVWAP_TARGET).get(ticker, 4.0))
         
-    def set_avwap_early_target(self, ticker, v):
-        d = self._load_json(self.FILES["AVWAP_EARLY_TARGET_CFG"], {})
+    def set_avwap_target_profit(self, ticker, v):
+        d = self._load_json(self.FILES.get("AVWAP_TARGET_CFG", "data/avwap_target.json"), self.DEFAULT_AVWAP_TARGET)
         d[ticker] = float(v)
-        self._save_json(self.FILES["AVWAP_EARLY_TARGET_CFG"], d)
+        self._save_json(self.FILES.get("AVWAP_TARGET_CFG", "data/avwap_target.json"), d)
 
-    # ==========================================================
-    # 🚨 [V29.16 수술] 스나이퍼 락온(Lock-on) 및 마스터 스위치 영속성 모듈 이식
-    # ==========================================================
+    def get_vrev_gap_switching_mode(self, ticker): 
+        return self._load_json(self.FILES.get("VREV_GAP_SWITCH_CFG", "data/vrev_gap_switch.json"), {}).get(ticker, False)
+        
+    def set_vrev_gap_switching_mode(self, ticker, v):
+        d = self._load_json(self.FILES.get("VREV_GAP_SWITCH_CFG", "data/vrev_gap_switch.json"), {})
+        d[ticker] = bool(v)
+        self._save_json(self.FILES.get("VREV_GAP_SWITCH_CFG", "data/vrev_gap_switch.json"), d)
+
+    def get_vrev_gap_threshold(self, ticker): 
+        return float(self._load_json(self.FILES.get("VREV_GAP_THRESH_CFG", "data/vrev_gap_thresh.json"), {}).get(ticker, -0.67))
+        
+    def set_vrev_gap_threshold(self, ticker, v):
+        d = self._load_json(self.FILES.get("VREV_GAP_THRESH_CFG", "data/vrev_gap_thresh.json"), {})
+        d[ticker] = float(v)
+        self._save_json(self.FILES.get("VREV_GAP_THRESH_CFG", "data/vrev_gap_thresh.json"), d)
+
     def get_master_switch(self, ticker): 
         return self._load_json(self.FILES["MASTER_SWITCH"], {}).get(ticker, "ALL")
         
@@ -766,12 +756,17 @@ class ConfigManager:
         d[ticker] = bool(v)
         self._save_json(self.FILES["SNIPER_SELL_LOCKED"], d)
 
-    # ==========================================================
     def get_secret_mode(self): return self._load_file(self.FILES["SECRET_MODE"]) == 'True'
     def set_secret_mode(self, v): self._save_file(self.FILES["SECRET_MODE"], str(v))
-    def get_active_tickers(self): return self._load_json(self.FILES["TICKER"], ["SOXL", "TQQQ"])
+    
+    def get_active_tickers(self): 
+        tickers = self._load_json(self.FILES["TICKER"], ["SOXL", "TQQQ"])
+        return [t for t in tickers if t != "SOXS"]
+        
     def set_active_tickers(self, v): self._save_json(self.FILES["TICKER"], v)
+    
     def get_chat_id(self): 
         v = self._load_file(self.FILES["CHAT_ID"])
         return int(v) if v else None
     def set_chat_id(self, v): self._save_file(self.FILES["CHAT_ID"], v)
+
